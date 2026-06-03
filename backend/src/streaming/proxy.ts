@@ -29,6 +29,9 @@ const MANIFEST_CACHE_TTL_MS = 2_000;
 const MANIFEST_CACHE_CONTROL = 'public, max-age=2';
 const UPSTREAM_TIMEOUT_MS = 10_000;
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;  // 7 days
+/** Upper bound on cached manifest entries. Maps preserve insertion order
+ *  in V8, so we use that to evict the oldest entry when over capacity. */
+const MANIFEST_CACHE_MAX_ENTRIES = 100;
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -37,6 +40,27 @@ const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSoc
 
 const inflightManifest = new Map<string, Promise<FetchedText>>();
 const upstreamManifestCache = new Map<string, { fetched: FetchedText; expiresAt: number }>();
+
+/** LRU put: evict the oldest entry if we're at capacity, then insert. */
+function manifestCachePut(
+  key: string,
+  value: { fetched: FetchedText; expiresAt: number },
+): void {
+  if (!upstreamManifestCache.has(key) && upstreamManifestCache.size >= MANIFEST_CACHE_MAX_ENTRIES) {
+    const oldest = upstreamManifestCache.keys().next().value;
+    if (oldest !== undefined) upstreamManifestCache.delete(oldest);
+  }
+  upstreamManifestCache.set(key, value);
+}
+
+/** LRU touch: re-insert on hit so the key moves to the back of the eviction order. */
+function manifestCacheTouch(key: string): void {
+  const v = upstreamManifestCache.get(key);
+  if (v !== undefined) {
+    upstreamManifestCache.delete(key);
+    upstreamManifestCache.set(key, v);
+  }
+}
 
 function upstreamGetOptions(parsed: URL): RequestOptions {
   return {
@@ -353,9 +377,12 @@ function fetchTextShared(key: string, fetchFn: () => Promise<FetchedText>): Prom
 async function fetchTextCached(upstreamUrl: string): Promise<FetchedText> {
   const now = Date.now();
   const hit = upstreamManifestCache.get(upstreamUrl);
-  if (hit && hit.expiresAt > now) return hit.fetched;
+  if (hit && hit.expiresAt > now) {
+    manifestCacheTouch(upstreamUrl);  // bump LRU position
+    return hit.fetched;
+  }
   const fetched = await fetchTextShared(`manifest:${upstreamUrl}`, () => fetchText(upstreamUrl));
-  upstreamManifestCache.set(upstreamUrl, { fetched, expiresAt: now + MANIFEST_CACHE_TTL_MS });
+  manifestCachePut(upstreamUrl, { fetched, expiresAt: now + MANIFEST_CACHE_TTL_MS });
   return fetched;
 }
 

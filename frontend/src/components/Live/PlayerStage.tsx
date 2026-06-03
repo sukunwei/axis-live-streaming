@@ -17,7 +17,7 @@
 
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import Hls from 'hls.js';
-import { hlsConfig } from '../../live/hlsConfig';
+import { makeHlsConfig } from '../../live/hlsConfig';
 import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
 import { MetricsCollector } from '../../live/MetricsCollector';
 import { useStreamingStore } from '../../stores/streamingStore';
@@ -120,7 +120,7 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.warn(`[player] sse-driven failover → backup[${nextIdx}] (channel ${channelId})`);
       hlsRef.current.destroy();
-      const next = new Hls(hlsConfig);
+      const next = new Hls(makeHlsConfig());
       hlsRef.current = next;
       next.loadSource(target);
       if (videoRef.current) next.attachMedia(videoRef.current);
@@ -175,7 +175,7 @@ export function PlayerStage({
       return;
     }
 
-    const hls = new Hls(hlsConfig);
+    const hls = new Hls(makeHlsConfig());
     hlsRef.current = hls;
 
     const tryLoad = (url: string): void => {
@@ -254,7 +254,7 @@ export function PlayerStage({
         case 'destroyRebuild': {
           setErrorMsg('Rebuilding playback instance…');
           hls.destroy();
-          const reborn = new Hls(hlsConfig);
+          const reborn = new Hls(makeHlsConfig());
           hlsRef.current = reborn;
           reborn.loadSource(streamUrl);
           reborn.attachMedia(video);
@@ -267,7 +267,7 @@ export function PlayerStage({
             setErrorMsg(null);
             setFailoverNotice(`Switched to backup #${idx + 1}`);
             hls.destroy();
-            const next = new Hls(hlsConfig);
+            const next = new Hls(makeHlsConfig());
             hlsRef.current = next;
             next.loadSource(backup);
             next.attachMedia(video);

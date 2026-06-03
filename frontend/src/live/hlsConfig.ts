@@ -27,7 +27,8 @@
 
 import type { HlsConfig } from 'hls.js';
 
-export const hlsConfig: Partial<HlsConfig> = {
+/** Shared base config — see tuning notes above. */
+const BASE_CONFIG: Partial<HlsConfig> = {
   // -- Latency / live edge --
   lowLatencyMode: true,
   liveSyncDuration: 10,             // Tune 3: 6 -> 10 (buffer >= 8s stable)
@@ -60,3 +61,41 @@ export const hlsConfig: Partial<HlsConfig> = {
   fragLoadingTimeOut: 10_000,
   fragLoadingMaxRetry: 6,
 };
+
+export const hlsConfig: Partial<HlsConfig> = BASE_CONFIG;
+
+/**
+ * Build a per-mount HlsConfig. Currently the only runtime-dependent knob is
+ * `abrEwmaDefaultEstimate`, which hls.js uses to pick the first ABR level
+ * before any bandwidth sample exists. Without a sane default it guesses
+ * ~1 Mbps, which causes the player to (a) pick a tier too high on slow
+ * networks and stall, or (b) waste the first ~3-5s re-buffering down.
+ *
+ * `navigator.connection.effectiveType` is the cheapest signal the platform
+ * exposes (Chromium + Edge; Safari/Firefox fall back to the default).
+ */
+export function makeHlsConfig(): Partial<HlsConfig> {
+  return {
+    ...BASE_CONFIG,
+    abrEwmaDefaultEstimate: defaultBandwidthEstimate(),
+  };
+}
+
+function defaultBandwidthEstimate(): number {
+  if (typeof navigator === 'undefined') return 1_000_000;
+  const conn = (navigator as Navigator & {
+    connection?: { effectiveType?: string; downlink?: number };
+  }).connection;
+  // Prefer downlink (Mbps) when present — more accurate than effectiveType.
+  if (typeof conn?.downlink === 'number' && conn.downlink > 0) {
+    return Math.round(conn.downlink * 1_000_000);
+  }
+  switch (conn?.effectiveType) {
+    case 'slow-2g': return   100_000;
+    case '2g':      return   200_000;
+    case '3g':      return   600_000;
+    case '4g':      return 1_500_000;
+    case '5g':      return 5_000_000;
+    default:        return 1_000_000;
+  }
+}
