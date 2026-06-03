@@ -89,15 +89,16 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
 | `dw-english` | Public News | `dwamdstream102.akamaized.net/hls/live/2015525/dwstream102/index.m3u8` | DW English 24/7 live，5 个 ABR 变体，Akamai CDN |
-| `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV 免费直播（极限运动为主），6 档到 **1080p**，Akamai CDN |
+| `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV 全球版（直 Akamai），6 档到 **1080p** |
+| `red-bull-tv-es` | Extreme Sports (ES) | `886bd3fbc782459f8de7555d32d7e9ce.mediatailor.us-west-2.amazonaws.com/v1/master/.../LINEAR-957-WORBLATAMESFAST-WHALETVPLUS/.../playlist.m3u8` | Red Bull TV LATAM/Spanish 版（AWS MediaTailor 做广告插入），5 档到 1080p，seg 实际从 `freqsyndlin.redbull.com` 出，Spanish CC 轨道 |
 | `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network（ACC 大学体育），5 个变体，Amagi 平台 |
 | `nhl-hockey` | Ice Hockey | `aegis-cloudfront-1.tubi.video/.../1f4cbb33.../playlist.m3u8` | NHL（冰球），6 个变体，Tubi / CloudFront CDN |
 | `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network，4 视频档 + I-frame + 字幕，Zype CDN |
 | `fubo-sports` | General Sports | `dnf08l6u6uxnz.cloudfront.net/master.m3u8` | Fubo Sports Network，6 个变体，CloudFront CDN |
 
-PRD "至少两种运动"由 `acc-network`（college football/basketball）和 `nhl-hockey`（ice hockey）覆盖，加上 `red-bull-tv`（极限运动）有 3 个明确不同的体育类别。`draftkings` / `fubo-sports` 是从 iptv-org 列表里筛出的额外可用源。
+PRD "至少两种运动"由 `acc-network`（college football/basketball）和 `nhl-hockey`（ice hockey）覆盖，加上 `red-bull-tv` / `red-bull-tv-es`（极限运动全球 + 西班牙语版）有 4 个明确不同的体育类别。`draftkings` / `fubo-sports` 是从 iptv-org 列表里筛出的额外可用源。
 
-**Failover cross-references**：4 个 sports 频道各自列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。
+**Failover cross-references**：5 个 sports 频道各自列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。
 
 > **关于源稳定性**：所有 URL 在 2026-06-03 已 curl 端到端验证（master 200 → variant 200 → segment 200）。**扫了 30+ 候选源**，绝大多数（Abu Dhabi / Dubai / Pluto stitcher / beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport / FITE-247 / ATV2 / Pluto M3U lists / 等）都因为 404 / TLS 拒握 / DNS 解析不了 / 协议不对（Pluto Stitcher）/ Cloudflare 风控（nocords）失败，详细 discard 列表在 commit history 里。公共源随时可能失效，部署前可跑 `scripts/test-sources.sh` 复测。
 

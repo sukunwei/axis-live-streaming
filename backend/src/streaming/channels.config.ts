@@ -12,20 +12,22 @@
  *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
  *    lives in commit history if anyone wants to retry.
  *
- * Current config: 1 public news + 4 sports + (no test) — was 6 channels with
+ * Current config: 1 public news + 5 sports — was 6 channels with
  * apple-bipbop test, replaced it with Red Bull TV (1080p + Akamai + 6 variants)
- * for a stronger live sports demo.
- *   - dw-english    public news  (real, DW public broadcast) — Akamai, 5 variants
- *   - red-bull-tv   extreme sports (Red Bull TV free live events) — Akamai, 6 variants, 1080p
- *   - acc-network   college sports (ACCDN) — Amagi, 5 variants
- *   - nhl-hockey    ice hockey (NHL) — Tubi/CloudFront, 6 variants
- *   - draftkings    sports betting / analysis — Zype, 4 video variants + iframe + subs
- *   - fubo-sports   general sports (Fubo Sports Network) — CloudFront, 6 variants
+ * for a stronger live sports demo. Added Red Bull TV ES (LATAM/Spanish via
+ * AWS MediaTailor) for a 7th channel.
+ *   - dw-english       public news  (real, DW public broadcast) — Akamai, 5 variants
+ *   - red-bull-tv      extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
+ *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor w/ ad insertion) — 5 variants, 1080p
+ *   - acc-network      college sports (ACCDN) — Amagi, 5 variants
+ *   - nhl-hockey       ice hockey (NHL) — Tubi/CloudFront, 6 variants
+ *   - draftkings       sports betting / analysis — Zype, 4 video variants + iframe + subs
+ *   - fubo-sports      general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
  * PRD "at least two sports" is satisfied by acc-network + nhl-hockey (or any
  * pair). All 5 sports channels live on different CDNs (Akamai / Amagi / Tubi-CF /
- * Zype / CloudFront), so a single CDN outage can only kill at most 1 of the
- * 4 backup cross-references per channel.
+ * Zype / CloudFront + AWS MediaTailor for the ES variant), so a single CDN
+ * outage can only kill at most 1 of the 4 backup cross-references per channel.
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -69,6 +71,23 @@ export const channels: readonly Channel[] = [
     variants: 6,  // 180p / 240p / 360p / 540p / 720p / 1080p (6660 kbps)
     backupUrls: [
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+      'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
+    ],
+  },
+  {
+    id: 'red-bull-tv-es',
+    sport: 'Extreme Sports (ES)',
+    name: 'Red Bull TV ES (LATAM)',
+    type: 'hls',
+    primaryUrl: 'https://886bd3fbc782459f8de7555d32d7e9ce.mediatailor.us-west-2.amazonaws.com/v1/master/ba62fe743df0fe93366eba3a257d792884136c7f/LINEAR-957-WORBLATAMESFAST-WHALETVPLUS/957/whaletvplus/hls/master/playlist.m3u8',
+    masterPath: 'playlist.m3u8',
+    live: true,
+    variants: 5,  // 216p / 360p / 576p / 720p / 1080p; Spanish CC track
+    // MediaTailor: each request gets a new session UUID, so segments are served
+    // from freqsyndlin.redbull.com. The proxy's `rest[0] === 'p'` cross-domain
+    // path handles that absolute-URL rewrite correctly.
+    backupUrls: [
+      'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8',
       'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
     ],
   },
