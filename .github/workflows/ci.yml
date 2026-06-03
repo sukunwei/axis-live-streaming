@@ -1,0 +1,42 @@
+name: ci
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Backend lint
+        run: pnpm --filter backend lint:ts
+
+      - name: Frontend lint
+        run: pnpm --filter frontend lint:ts
+
+      - name: Backend test
+        run: pnpm --filter backend test
+
+      - name: Frontend test
+        run: pnpm --filter frontend test
+
+      - name: Backend build
+        run: pnpm --filter backend build
+
+      - name: Frontend build
+        run: pnpm --filter frontend build

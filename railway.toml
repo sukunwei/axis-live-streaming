@@ -1,0 +1,11 @@
+# Railway 自动识别。Dockerfile 已配置；这里只覆盖运行时。
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node backend/dist/server.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 5
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

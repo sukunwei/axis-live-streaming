@@ -1,0 +1,13 @@
+{
+  "name": "axis-live-streaming",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "pnpm rebuild esbuild",
+    "start": "pnpm predev && concurrently -k --kill-signal SIGKILL -n backend,frontend -c blue,green \"pnpm --filter backend dev\" \"pnpm --filter frontend dev\"",
+    "predev": "lsof -i tcp:5174 -t 2>/dev/null | xargs kill -9 2>/dev/null || true; lsof -i tcp:5173 -t 2>/dev/null | xargs kill -9 2>/dev/null || true"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
