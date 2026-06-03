@@ -217,11 +217,62 @@ function rewriteLine(
   return toProxyPath(t, baseUrl, primaryUrl, channelId);
 }
 
+/** HEAD the first variant; 200/206 = reachable, anything else = unreach.
+ *  Try HEAD first (cheap), fall back to a Range GET if the CDN rejects HEAD
+ *  (MediaTailor returns 405/404 for HEAD — same goes for some Akamai WAF
+ *  configs). The GET stops reading the body as soon as status lands.
+ */
+function headOk(upstreamUri: string, baseUrl: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const abs = new URL(upstreamUri, baseUrl);
+    const mod = abs.protocol === 'https:' ? https : http;
+    const timer = setTimeout(() => resolve(false), 5_000);
+    const opts = upstreamGetOptions(abs);
+    const tryHead = (): void => {
+      const req = mod.request(abs, { ...opts, method: 'HEAD' }, res => {
+        clearTimeout(timer);
+        res.resume();
+        const code = res.statusCode ?? 0;
+        if (code >= 200 && code < 400) {
+          resolve(true);
+        } else if (code === 405 || code === 404 || code === 501) {
+          // CDN doesn't allow HEAD; retry as a tiny Range GET.
+          clearTimeout(timer);
+          tryGet();
+        } else {
+          resolve(false);
+        }
+      });
+      req.on('error', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      req.end();
+    };
+    const tryGet = (): void => {
+      const t2 = setTimeout(() => resolve(false), 5_000);
+      const req = mod.request(abs, { ...opts, method: 'GET', headers: { ...opts.headers, Range: 'bytes=0-0' } }, res => {
+        clearTimeout(t2);
+        res.resume();  // discard body
+        const code = res.statusCode ?? 0;
+        resolve(code >= 200 && code < 400);
+      });
+      req.on('error', () => {
+        clearTimeout(t2);
+        resolve(false);
+      });
+      req.end();
+    };
+    tryHead();
+  });
+}
+
 /**
  * Convert upstream URL to same-origin proxy path.
  *
  * Same domain: use relative path (cleaner for human inspection)
- * Cross-domain: encode full URL into ?u=<base64> so proxy can fetch (France 24-type sources)
+ * Cross-domain: encode full URL into ?u=<base64> so proxy can fetch
+ * (France 24-type sources)
  */
 function toProxyPath(
   upstreamUri: string,
@@ -414,21 +465,4 @@ function parseFirstVariant(manifest: string): string | null {
     return t;
   }
   return null;
-}
-
-/** HEAD the first variant; 200/206 is treated as OK */
-function headOk(upstreamUri: string, baseUrl: string): Promise<boolean> {
-  return new Promise(resolve => {
-    const abs = new URL(upstreamUri, baseUrl);
-    const mod = abs.protocol === 'https:' ? https : http;
-    const timer = setTimeout(() => resolve(false), 5_000);
-    const req = mod.request(abs, { ...upstreamGetOptions(abs), method: 'HEAD' }, res => {
-      clearTimeout(timer);
-      res.resume();
-      const code = res.statusCode ?? 0;
-      resolve(code >= 200 && code < 400);
-    });
-    req.on('error', () => { clearTimeout(timer); resolve(false); });
-    req.end();
-  });
 }
