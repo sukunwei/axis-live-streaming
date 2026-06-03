@@ -30,14 +30,15 @@
  * smoothnessScore desc, then others by the same).
  *
  *   sports:
- *   - red-bull-tv      extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
- *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor) — 5 variants, 1080p
- *   - acc-network      college sports (ACCDN) — Amagi, 5 variants
- *   - draftkings       sports betting / analysis — Zype, 4 video variants + iframe + subs
- *   - fubo-sports      general sports (Fubo Sports Network) — CloudFront, 6 variants
+ *   - red-bull-tv        extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
+ *   - red-bull-tv-540p   extreme sports (Red Bull TV 540p fixed, single-bitrate) — 1 variant, 960x540
+ *   - red-bull-tv-es     extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor) — 5 variants, 1080p
+ *   - acc-network        college sports (ACCDN) — Amagi, 5 variants
+ *   - draftkings         sports betting / analysis — Zype, 4 video variants + iframe + subs
+ *   - fubo-sports        general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
  *   others:
- *   - livestar         general live (Live Star HD, single-bitrate media playlist) — 1 variant, 720p
+ *   - livestar           general live (Live Star HD, single-bitrate media playlist) — 1 variant, 720p
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master (or media playlist for single-bitrate)
@@ -75,6 +76,23 @@ const sportsChannels: readonly Channel[] = [
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
       'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
     ],
+  },
+  {
+    id: 'red-bull-tv-540p',
+    sport: 'Extreme Sports (540p)',
+    category: 'sports',
+    name: 'Red Bull TV 540p',
+    type: 'hls',
+    // Same Red Bull TV upstream as the master-channel entry, but pinned to
+    // the 540p / 1660 kbps single-bitrate media playlist. Useful for:
+    //   - bandwidth-constrained demo (mobile / throttled)
+    //   - exercising the proxy's single-bitrate path (no master, no variants)
+    // hls.js plays the media playlist directly; no ABR. Live, 6s segments.
+    primaryUrl: 'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master_1660.m3u8',
+    masterPath: 'master_1660.m3u8',
+    live: true,
+    variants: 1,  // single bitrate
+    backupUrls: [], // see livestar above — same no-wrong-content-failover rationale
   },
   {
     id: 'red-bull-tv-es',
