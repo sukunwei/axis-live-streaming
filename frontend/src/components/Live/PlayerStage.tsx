@@ -1,0 +1,421 @@
+/**
+ * PlayerStage — main player (M3.4 + M3.6 SSE-driven failover)
+ *
+ * Responsibilities:
+ *   - Mount <video> element
+ *   - Create hls.js instance (hlsConfig) + MetricsCollector
+ *   - Error recovery via RecoveryGate (4 levels, local fatal trigger)
+ *   - Improvement 3: subscribe to store.healthByChannel[currentChannelId], auto-switch to backup after 2s of down
+ *   - Exposes QualityHUD (observer reads metrics via collector.current)
+ *   - Exposes SourceStatusBadge (channelId passed externally, read from store)
+ *
+ * Key constraints:
+ *   - on channelId change, **whole-component remount** (parent uses key={channelId})
+ *   - on destroy: hls.destroy() + collector.detach()
+ *   - on backup switch: only swap loadSource, keep video element (preserves frame)
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import Hls from 'hls.js';
+import { hlsConfig } from '../../live/hlsConfig';
+import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
+import { MetricsCollector } from '../../live/MetricsCollector';
+import { useStreamingStore } from '../../stores/streamingStore';
+import { QualityHUD } from './QualityHUD';
+import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
+
+function isBufferFullDetail(details: string | undefined): boolean {
+  if (!details) return false;
+  const d = details.toLowerCase();
+  return d.includes('bufferfull') || d === 'buffer_full_error';
+}
+
+function trimHlsBackBuffer(hls: Hls): void {
+  const h = hls as Hls & { flushBackBuffer?: () => void; flushBuffer?: () => void };
+  if (typeof h.flushBackBuffer === 'function') {
+    h.flushBackBuffer();
+    return;
+  }
+  if (typeof h.flushBuffer === 'function') {
+    h.flushBuffer();
+  }
+}
+
+interface PlayerStageProps {
+  /** Proxied m3u8 URL (frontend never connects to upstream directly) */
+  streamUrl: string;
+  streamName: string;
+  channelId?: string;
+  /** Backup sources (upstream direct URL) */
+  backupStreamUrls?: readonly string[];
+  onPlaying?: () => void;
+  onError?: (kind: 'network' | 'media' | 'other', detail: string) => void;
+}
+
+export function PlayerStage({
+  streamUrl,
+  streamName,
+  channelId,
+  backupStreamUrls = [],
+  onError,
+}: PlayerStageProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const gateRef = useRef(new RecoveryGate());
+  const collectorRef = useRef(new MetricsCollector());
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [currentQuality, setCurrentQuality] = useState<string>('auto');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const playerContainerRef = useRef<HTMLDivElement>(null);
+
+  const toggleFullscreen = (): void => {
+    const el = playerContainerRef.current;
+    if (!el) return;
+    if (document.fullscreenElement === el) {
+      void document.exitFullscreen();
+    } else {
+      void el.requestFullscreen();
+    }
+  };
+
+  // Improvement 3: subscribe to health monitor, auto-switch to backup after 2s of down
+  const health = useStreamingStore(s =>
+    channelId ? s.healthByChannel[channelId] ?? 'ok' : 'ok',
+  );
+  useEffect(() => {
+    if (health !== 'down' || !channelId) return;
+    const t = setTimeout(() => {
+      // Pick the next untried backup (avoid loops: if currently on backup[0], jump to backup[1])
+      const currentIsBackup = (backupStreamUrls ?? []).some(b => hlsRef.current?.url === b);
+      const nextIdx = currentIsBackup ? 1 : 0;
+      const target = (backupStreamUrls ?? [])[nextIdx];
+      if (!target || !hlsRef.current) return;
+      setFailoverNotice(`SSE-driven failover → backup #${nextIdx + 1}`);
+      // eslint-disable-next-line no-console
+      console.warn(`[player] sse-driven failover → backup[${nextIdx}] (channel ${channelId})`);
+      hlsRef.current.destroy();
+      const next = new Hls(hlsConfig);
+      hlsRef.current = next;
+      next.loadSource(target);
+      if (videoRef.current) next.attachMedia(videoRef.current);
+    }, 2_000);
+    return () => clearTimeout(t);
+  }, [health, channelId, backupStreamUrls]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    setIsLoading(true);
+    setErrorMsg(null);
+    setFailoverNotice(null);
+    gateRef.current.reset();
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    // Start MetricsCollector
+    // (attach after hls is created below)
+
+    if (!Hls.isSupported()) {
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = streamUrl;
+        const onLoaded = (): void => {
+          setIsLoading(false);
+          void video.play().catch(() => setIsPlaying(false));
+        };
+        const onError = (): void => {
+          setErrorMsg('Safari HLS load failed');
+          setIsLoading(false);
+        };
+        video.addEventListener('loadedmetadata', onLoaded, { once: true });
+        video.addEventListener('error', onError, { once: true });
+        return () => {
+          video.removeEventListener('loadedmetadata', onLoaded);
+          video.removeEventListener('error', onError);
+        };
+      }
+      setErrorMsg('HLS not supported in this browser');
+      setIsLoading(false);
+      return;
+    }
+
+    const hls = new Hls(hlsConfig);
+    hlsRef.current = hls;
+
+    const tryLoad = (url: string): void => {
+      hls.loadSource(url);
+    };
+
+    tryLoad(streamUrl);
+    hls.attachMedia(video);
+
+    // Stall detection: waiting events → collector records stall
+    video.addEventListener('waiting', () => {
+      collectorRef.current.onStallStart();
+      setIsLoading(true);
+    });
+    video.addEventListener('canplay', () => {
+      collectorRef.current.onStallEnd();
+      setIsLoading(false);
+    });
+
+    hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      // eslint-disable-next-line no-console
+      console.log(`[hls] manifest parsed, ${data.levels.length} levels`);
+      setIsLoading(false);
+      void video.play().catch((err: Error) => {
+        // eslint-disable-next-line no-console
+        console.log('[hls] autoplay prevented:', err.message);
+        setIsPlaying(false);
+      });
+    });
+
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+      const level = hls.levels[data.level];
+      if (level) setCurrentQuality(`${level.height}p`);
+    });
+
+    const onVisibility = (): void => {
+      if (document.hidden) hls.stopLoad();
+      else hls.startLoad();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (isBufferFullDetail(data.details)) {
+        try {
+          trimHlsBackBuffer(hls);
+        } catch {
+          // non-fatal buffer trim — ignore
+        }
+        return;
+      }
+      if (!data.fatal) return;
+
+      const kind: 'network' | 'media' | 'other' =
+        data.type === Hls.ErrorTypes.NETWORK_ERROR ? 'network'
+        : data.type === Hls.ErrorTypes.MEDIA_ERROR ? 'media'
+        : 'other';
+
+      const action: RecoveryAction = gateRef.current.nextAction(kind);
+      // eslint-disable-next-line no-console
+      console.warn(`[hls] fatal ${kind} → ${action}`, data.details);
+
+      switch (action) {
+        case 'retry':
+          setErrorMsg('Network error, reconnecting…');
+          hls.startLoad();
+          break;
+        case 'recover':
+          setErrorMsg('Media error, recovering…');
+          hls.recoverMediaError();
+          break;
+        case 'swapAudio':
+          setErrorMsg('Media error, swapping audio codec…');
+          hls.swapAudioCodec();
+          hls.recoverMediaError();
+          break;
+        case 'destroyRebuild': {
+          setErrorMsg('Rebuilding playback instance…');
+          hls.destroy();
+          const reborn = new Hls(hlsConfig);
+          hlsRef.current = reborn;
+          reborn.loadSource(streamUrl);
+          reborn.attachMedia(video);
+          break;
+        }
+        case 'failover': {
+          const idx = gateRef.current.nextBackupIndex();
+          const backup = backupStreamUrls[idx];
+          if (backup) {
+            setErrorMsg(null);
+            setFailoverNotice(`Switched to backup #${idx + 1}`);
+            hls.destroy();
+            const next = new Hls(hlsConfig);
+            hlsRef.current = next;
+            next.loadSource(backup);
+            next.attachMedia(video);
+            // eslint-disable-next-line no-console
+            console.warn(`[hls] failover → backup[${idx}]: ${backup}`);
+          } else {
+            setErrorMsg('All backup sources unavailable');
+            onError?.(kind, data.details ?? 'all backups exhausted');
+          }
+          break;
+        }
+        default: {
+          const _exhaustive: never = action;
+          void _exhaustive;
+        }
+      }
+    });
+
+    // Start MetricsCollector
+    collectorRef.current.attach(hls, video);
+
+    // Send mount event
+    if (channelId) {
+      void fetch('/api/log-playback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId, event: 'mount' }),
+      }).catch(() => { /* logging is best-effort */ });
+    }
+
+    // Periodic sample upload: 5s while playing
+    const sampleTimer = window.setInterval(() => {
+      if (!channelId) return;
+      const m = collectorRef.current.current;
+      if (m.samplingAt === 0) return;
+      void fetch('/api/log-playback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channelId,
+          event: 'sample',
+          stalls: m.stallCount,
+          totalStallMs: Math.round(m.totalStallMs),
+          droppedFrames: m.droppedFrames,
+          decodedFrames: m.decodedFrames,
+          avgBufferSec: m.bufferSec,
+          avgBitrateKbps: m.bitrateKbps,
+          avgFps: m.fps,
+        }),
+      }).catch(() => { /* best-effort */ });
+    }, 5_000);
+
+    // Keyboard shortcut: M toggles mute, F toggles fullscreen
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'm' || e.key === 'M') {
+        const v = videoRef.current;
+        if (!v) return;
+        v.muted = !v.muted;
+        setIsMuted(v.muted);
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+
+    // Fullscreen state sync (F11 / Esc / browser fullscreen button)
+    const onFsChange = (): void => {
+      setIsFullscreen(document.fullscreenElement === playerContainerRef.current);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+
+    return () => {
+      // Final unmount sample
+      if (channelId) {
+        const m = collectorRef.current.current;
+        if (m.samplingAt !== 0) {
+          void fetch('/api/log-playback', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channelId,
+              event: 'unmount',
+              stalls: m.stallCount,
+              totalStallMs: Math.round(m.totalStallMs),
+              droppedFrames: m.droppedFrames,
+              decodedFrames: m.decodedFrames,
+              avgBufferSec: m.bufferSec,
+              avgBitrateKbps: m.bitrateKbps,
+              avgFps: m.fps,
+            }),
+          }).catch(() => { /* best-effort */ });
+        }
+      }
+      window.clearInterval(sampleTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('fullscreenchange', onFsChange);
+      collectorRef.current.detach();
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+  }, [streamUrl, backupStreamUrls, onError]);
+
+  return (
+    <div ref={playerContainerRef} className="relative w-full h-full bg-black rounded-lg overflow-hidden">
+      <video
+        ref={videoRef}
+        className="w-full h-full"
+        playsInline
+        onPlay={() => { setIsPlaying(true); }}
+        onPause={() => setIsPlaying(false)}
+        onClick={() => (videoRef.current?.paused ? videoRef.current?.play() : videoRef.current?.pause())}
+      />
+
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60 pointer-events-none">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+            <p className="text-white text-sm">Loading {streamName}…</p>
+          </div>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="absolute top-4 left-4 right-4 bg-red-500/90 text-white px-4 py-2 rounded-lg">
+          <p className="text-sm">{errorMsg}</p>
+        </div>
+      )}
+
+      {failoverNotice && (
+        <div className="absolute bottom-16 left-4 right-4 bg-yellow-500/90 text-black px-4 py-2 rounded-lg">
+          <p className="text-sm font-medium">⚠ {failoverNotice}</p>
+        </div>
+      )}
+
+      <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-1.5 rounded">
+        <p className="text-sm font-medium">{streamName}</p>
+      </div>
+
+      <QualityHUD collector={collectorRef.current} />
+
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+        <div className="flex items-center gap-3 text-white text-sm pointer-events-none">
+          <span className="bg-red-600 px-2 py-0.5 rounded text-xs font-semibold">
+            {isPlaying ? '● LIVE' : '⏸ PAUSED'}
+          </span>
+          {currentQuality !== 'auto' && (
+            <span className="bg-black/60 px-2 py-0.5 rounded text-xs">{currentQuality}</span>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              v.muted = !v.muted;
+              setIsMuted(v.muted);
+            }}
+            className="pointer-events-auto text-white hover:text-zinc-300 transition-colors p-1.5 rounded hover:bg-white/10"
+            title={isMuted ? 'Unmute (M)' : 'Mute (M)'}
+            aria-label={isMuted ? 'Unmute' : 'Mute'}
+          >
+            {isMuted
+              ? <VolumeX className="w-5 h-5" />
+              : <Volume2 className="w-5 h-5" />}
+          </button>
+          <button
+            onClick={toggleFullscreen}
+            className="pointer-events-auto text-white hover:text-zinc-300 transition-colors p-1.5 rounded hover:bg-white/10"
+            title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          >
+            {isFullscreen
+              ? <Minimize2 className="w-5 h-5" />
+              : <Maximize2 className="w-5 h-5" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,7 @@
+packages:
+  - 'frontend'
+  - 'backend'
+
+# pnpm v10+: allow esbuild postinstall (downloads platform-native binary)
+allowBuilds:
+  esbuild: true

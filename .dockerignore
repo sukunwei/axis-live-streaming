@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.github
+figma
+docs
+*.log
+.DS_Store
+frontend
