@@ -7,10 +7,11 @@
  * - ChannelGrid triggers prefetch on hover (§4.2 fast switching)
  * - Owns a shared MetricsCollector ref so QualityHUD can render as a sibling
  *   below the video (overlay over the player frame is no longer needed).
+ * - PlayerStage is lazy-loaded so the hls.js chunk (~80KB gz) doesn't block
+ *   the initial render of the channel list / SSE hookup.
  */
 
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { PlayerStage } from '../components/Live/PlayerStage';
+import { Suspense, lazy, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
 import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
@@ -18,6 +19,16 @@ import { useSourceHealthSse } from '../hooks/useSourceHealthSse';
 import { useStreamingStore } from '../stores/streamingStore';
 import type { Channel } from '../lib/channels.config';
 import type { MetricsCollector } from '../live/MetricsCollector';
+
+const PlayerStage = lazy(() =>
+  import('../components/Live/PlayerStage').then(m => ({ default: m.PlayerStage })),
+);
+
+interface ChannelsResponse {
+  channels: Channel[];
+  /** Unique upstream origins (primary + backup) — preconnect targets. */
+  upstreamOrigins: string[];
+}
 
 export default function App() {
   const channels = useStreamingStore(s => s.channels);
@@ -31,18 +42,19 @@ export default function App() {
   // Keying PlayerStage by channelId gives us a fresh collector per channel.
   const collectorRef: MutableRefObject<MetricsCollector | null> = useRef(null);
 
-  // Fetch channel list on mount
+  // Fetch channel list on mount; also warm preconnect to upstream HLS hosts.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch('/channels');
         if (!res.ok) throw new Error(`/channels status ${res.status}`);
-        const data: Channel[] = await res.json();
+        const data = (await res.json()) as ChannelsResponse;
         if (cancelled) return;
-        setChannels(data);
-        if (data.length > 0 && !currentChannelId) {
-          setCurrent(data[0].id);
+        warmPreconnects(data.upstreamOrigins);
+        setChannels(data.channels);
+        if (data.channels.length > 0 && !currentChannelId) {
+          setCurrent(data.channels[0].id);
         }
       } catch (err) {
         if (!cancelled) setLoadError((err as Error).message);
@@ -67,14 +79,16 @@ export default function App() {
           <div className="lg:col-span-2 space-y-4">
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
-                <PlayerStage
-                  key={currentChannel.id}
-                  streamUrl={currentChannel.streamUrl}
-                  streamName={currentChannel.name}
-                  channelId={currentChannel.id}
-                  backupStreamUrls={currentChannel.backupStreamUrls}
-                  collectorRef={collectorRef}
-                />
+                <Suspense fallback={<PlayerSkeleton />}>
+                  <PlayerStage
+                    key={currentChannel.id}
+                    streamUrl={currentChannel.streamUrl}
+                    streamName={currentChannel.name}
+                    channelId={currentChannel.id}
+                    backupStreamUrls={currentChannel.backupStreamUrls}
+                    collectorRef={collectorRef}
+                  />
+                </Suspense>
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-500">
                   {loadError ? `Error: ${loadError}` : 'Loading…'}
@@ -106,6 +120,33 @@ export default function App() {
           </div>
         </div>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Inject <link rel="preconnect"> for each unique upstream HLS origin.
+ * Idempotent: re-running on channel-list refresh is a no-op (data-preconnect
+ * attribute guards against duplicates).
+ */
+function warmPreconnects(origins: readonly string[]): void {
+  if (typeof document === 'undefined') return;
+  const head = document.head;
+  for (const origin of origins) {
+    if (head.querySelector(`link[data-preconnect="${origin}"]`)) continue;
+    const link = document.createElement('link');
+    link.rel = 'preconnect';
+    link.href = origin;
+    link.crossOrigin = 'anonymous';
+    link.setAttribute('data-preconnect', origin);
+    head.appendChild(link);
+  }
+}
+
+function PlayerSkeleton(): JSX.Element {
+  return (
+    <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">
+      Loading player…
     </div>
   );
 }

@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>axis-live-streaming</title>
+
+    <!--
+      Preconnect to backend origin (dev only — in prod frontend is served by
+      the same Node process, so the connection is already there).
+      Vite serves this HTML in dev at http://localhost:5173 and the API/WS
+      lives at http://localhost:5174, so we still pay a TCP+TLS roundtrip
+      to that origin before the first fetch / EventSource opens.
+    -->
+    <link rel="preconnect" href="http://localhost:5174" crossorigin />
+
+    <!--
+      Upstream HLS hosts are unknown at build time; App.tsx injects
+      <link rel="preconnect"> for each unique upstream origin once
+      /channels resolves. The dns-prefetch below is a defensive fallback
+      for browsers that don't honor preconnect (older WebKit) — same cost,
+      much wider support.
+    -->
+    <link rel="dns-prefetch" href="http://localhost:5174" />
   </head>
   <body>
     <div id="root"></div>

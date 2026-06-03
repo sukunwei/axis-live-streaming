@@ -56,7 +56,21 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/channels') {
     const summary = getPlaybackSummary();
-    const enriched = getChannels()
+    const allChannels = getChannels();
+
+    // Collect unique upstream origins (primary + backups) for preconnect hints.
+    // The frontend injects <link rel="preconnect"> for each so the TLS/TCP
+    // handshake completes before the first manifest/segment fetch.
+    const originSet = new Set<string>();
+    for (const c of allChannels) {
+      try { originSet.add(new URL(c.primaryUrl).origin); } catch { /* skip bad url */ }
+      for (const b of c.backupUrls) {
+        try { originSet.add(new URL(b).origin); } catch { /* skip */ }
+      }
+    }
+    const upstreamOrigins = [...originSet].sort();
+
+    const enriched = allChannels
       .map(c => {
         const observed = summary[c.id];
         const staticScore = computeSmoothness(c);
@@ -80,11 +94,15 @@ const httpServer = http.createServer(async (req, res) => {
         };
       })
       .sort((a, b) => b.smoothnessScore - a.smoothnessScore);  // strong → weak
+
+    // SWR cache: channel list changes rarely (registry + smoothness score).
+    // 60s fresh + 600s stale-while-revalidate keeps clients snappy on
+    // re-mount without making the UI feel stale.
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=600',
     });
-    res.end(JSON.stringify(enriched));
+    res.end(JSON.stringify({ channels: enriched, upstreamOrigins }));
     return;
   }
 

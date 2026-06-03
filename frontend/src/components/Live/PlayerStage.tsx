@@ -40,6 +40,21 @@ function trimHlsBackBuffer(hls: Hls): void {
   }
 }
 
+/**
+ * Best-effort playback log via sendBeacon. Doesn't compete with HLS segment
+ * fetches for the HTTP/1.1 socket pool and survives page unloads (the page
+ * hide / unmount event below).
+ */
+function sendLog(payload: Record<string, unknown>): void {
+  if (typeof navigator === 'undefined' || typeof navigator.sendBeacon !== 'function') return;
+  try {
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    navigator.sendBeacon('/api/log-playback', blob);
+  } catch {
+    // Queue full or serialization failed — drop the log.
+  }
+}
+
 interface PlayerStageProps {
   /** Proxied m3u8 URL (frontend never connects to upstream directly) */
   streamUrl: string;
@@ -276,10 +291,7 @@ export function PlayerStage({
 
     // Send mount event
     if (channelId) {
-      void fetch('/api/log-playback', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId, event: 'mount' }),
-      }).catch(() => { /* logging is best-effort */ });
+      sendLog({ channelId, event: 'mount' });
     }
 
     // Periodic sample upload: 5s while playing
@@ -287,20 +299,17 @@ export function PlayerStage({
       if (!channelId) return;
       const m = collector.current;
       if (m.samplingAt === 0) return;
-      void fetch('/api/log-playback', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channelId,
-          event: 'sample',
-          stalls: m.stallCount,
-          totalStallMs: Math.round(m.totalStallMs),
-          droppedFrames: m.droppedFrames,
-          decodedFrames: m.decodedFrames,
-          avgBufferSec: m.bufferSec,
-          avgBitrateKbps: m.bitrateKbps,
-          avgFps: m.fps,
-        }),
-      }).catch(() => { /* best-effort */ });
+      sendLog({
+        channelId,
+        event: 'sample',
+        stalls: m.stallCount,
+        totalStallMs: Math.round(m.totalStallMs),
+        droppedFrames: m.droppedFrames,
+        decodedFrames: m.decodedFrames,
+        avgBufferSec: m.bufferSec,
+        avgBitrateKbps: m.bitrateKbps,
+        avgFps: m.fps,
+      });
     }, 5_000);
 
     // Keyboard shortcut: M toggles mute, F toggles fullscreen
@@ -328,20 +337,17 @@ export function PlayerStage({
       if (channelId) {
         const m = collector.current;
         if (m.samplingAt !== 0) {
-          void fetch('/api/log-playback', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              channelId,
-              event: 'unmount',
-              stalls: m.stallCount,
-              totalStallMs: Math.round(m.totalStallMs),
-              droppedFrames: m.droppedFrames,
-              decodedFrames: m.decodedFrames,
-              avgBufferSec: m.bufferSec,
-              avgBitrateKbps: m.bitrateKbps,
-              avgFps: m.fps,
-            }),
-          }).catch(() => { /* best-effort */ });
+          sendLog({
+            channelId,
+            event: 'unmount',
+            stalls: m.stallCount,
+            totalStallMs: Math.round(m.totalStallMs),
+            droppedFrames: m.droppedFrames,
+            decodedFrames: m.decodedFrames,
+            avgBufferSec: m.bufferSec,
+            avgBitrateKbps: m.bitrateKbps,
+            avgFps: m.fps,
+          });
         }
       }
       window.clearInterval(sampleTimer);

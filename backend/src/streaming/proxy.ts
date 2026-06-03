@@ -46,7 +46,7 @@ function upstreamGetOptions(parsed: URL): RequestOptions {
 }
 
 export async function handleHlsProxy(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   url: URL,
 ): Promise<void> {
@@ -90,7 +90,7 @@ export async function handleHlsProxy(
         });
         res.end(rewritten);
       } else {
-        await proxySegment(res, upstreamUrl);
+        await proxySegment(req, res, upstreamUrl);
       }
       return;
     }
@@ -110,7 +110,7 @@ export async function handleHlsProxy(
       await proxyManifest(res, upstreamUrl, ch.primaryUrl, channelId, isMaster, isLive);
       return;
     }
-    await proxySegment(res, upstreamUrl);
+    await proxySegment(req, res, upstreamUrl);
   } catch (err) {
     if (res.writableEnded) return;  // response already ended by prior code
     console.error('[proxy] error', {
@@ -254,7 +254,7 @@ function decodeProxyUrl(u: string | null): string | null {
 }
 
 // -- segment: stream pipe upstream segments to client ----------------------
-function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
+function proxySegment(req: IncomingMessage, res: ServerResponse, upstreamUrl: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void): void => {
@@ -279,23 +279,45 @@ function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
       }
       const parsed = new URL(url);
       const mod = parsed.protocol === 'https:' ? https : http;
-      const req = mod.get(parsed, upstreamGetOptions(parsed), msg => {
+      const upstreamReq = mod.get(parsed, upstreamGetOptions(parsed), msg => {
         // follow 3xx
         if (msg.statusCode && msg.statusCode >= 300 && msg.statusCode < 400 && msg.headers.location) {
           msg.resume();
-          req.destroy();  // close the old request socket
+          upstreamReq.destroy();  // close the old request socket
           const next = new URL(msg.headers.location, url).toString();
           follow(next, redirectCount + 1);
           return;
         }
         if (settled || res.headersSent) return;  // prevent ERR_HTTP_HEADERS_SENT
         const status = msg.statusCode ?? 502;
-        try {
-          res.writeHead(status, {
-            'Content-Type': msg.headers['content-type'] ?? 'video/mp2t',
-            'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}`,
+
+        // Conditional GET: if client sent If-Modified-Since and upstream's
+        // Last-Modified is unchanged, return 304 with no body. Saves the
+        // full segment bytes on revalidation (browser cache, multi-tab).
+        const upstreamLm = msg.headers['last-modified'];
+        const clientIms = req.headers['if-modified-since'];
+        if (status === 200 && upstreamLm && clientIms && upstreamLm === clientIms) {
+          res.writeHead(304, {
+            'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}, immutable`,
             'Access-Control-Allow-Origin': '*',
+            'Last-Modified': upstreamLm,
           });
+          msg.resume();
+          return settle(resolve);
+        }
+
+        // Build response headers. `immutable` lets the browser skip
+        // revalidation within max-age (live segments don't change once
+        // published).
+        const headers: Record<string, string | number> = {
+          'Content-Type': msg.headers['content-type'] ?? 'video/mp2t',
+          'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}, immutable`,
+          'Access-Control-Allow-Origin': '*',
+        };
+        if (upstreamLm) headers['Last-Modified'] = upstreamLm;
+
+        try {
+          res.writeHead(status, headers);
         } catch {
           settle(() => reject(new Error('writeHead failed')));
           return;
@@ -304,7 +326,7 @@ function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
         msg.on('end', () => settle(resolve));
         msg.on('error', err => settle(() => reject(err)));
       });
-      req.on('error', err => settle(() => reject(err)));
+      upstreamReq.on('error', err => settle(() => reject(err)));
     };
     follow(upstreamUrl);
   });
