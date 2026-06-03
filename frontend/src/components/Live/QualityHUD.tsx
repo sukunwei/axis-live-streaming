@@ -1,8 +1,12 @@
 /**
- * QualityHUD — 1Hz-sampled quality overlay (§4.5).
+ * QualityHUD — 1Hz-sampled quality panel (§4.5).
+ *
+ * Rendered as a sibling of the video container in App.tsx (not as an overlay
+ * over the video frame — see the P0 UI cleanup). Uses a normal-flow card so
+ * the parent grid's `space-y-4` keeps it under the video.
  *
  * Design:
- *   - Takes a MetricsCollector instance
+ *   - Takes a MetricsCollector instance (may be null before PlayerStage mounts)
  *   - Internal useState + setInterval(1000) forces re-render
  *   - Reads MetricsSnapshot from collector.current
  *   - Numbers use tabular-nums to prevent jitter
@@ -33,9 +37,12 @@ export function QualityHUD({ collector, visible = true }: QualityHUDProps) {
   if (m.samplingAt === 0) return null;
 
   return (
-    <div className="absolute top-4 right-4 bg-black/75 text-white px-3 py-2 rounded-lg text-xs space-y-1.5 min-w-[180px] backdrop-blur">
-      <div className="font-semibold text-zinc-300 mb-1 flex items-center gap-1.5">
-        <Activity className="w-3 h-3" /> Quality
+    <div
+      data-testid="quality-hud"
+      className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 text-xs space-y-1.5"
+    >
+      <div className="font-semibold text-zinc-300 mb-2 flex items-center gap-1.5">
+        <Activity className="w-3.5 h-3.5" /> Quality
       </div>
       <Row icon={<Zap className="w-3 h-3" />} label="Bitrate" value={`${m.bitrateKbps} kbps`} />
       <Row icon={<Gauge className="w-3 h-3" />} label="Bandwidth" value={`${m.bandwidthKbps} kbps`} />
