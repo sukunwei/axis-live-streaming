@@ -187,7 +187,14 @@ export function PlayerStage({
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const playerContainerRef = useRef<HTMLDivElement>(null);
+
+  // A VOD stream has a finite, >0 duration. A live stream reports Infinity
+  // (hls.js) or 0 (until metadata loads). The slider is only seekable in
+  // the VOD case; for live we render a static bar.
+  const isSeekable = Number.isFinite(duration) && duration > 0;
 
   const toggleFullscreen = (): void => {
     const el = playerContainerRef.current;
@@ -469,6 +476,10 @@ export function PlayerStage({
         onPlay={() => { setIsPlaying(true); }}
         onPause={() => setIsPlaying(false)}
         onClick={() => (videoRef.current?.paused ? videoRef.current?.play() : videoRef.current?.pause())}
+        onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+        onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
+        onDurationChange={() => setDuration(videoRef.current?.duration ?? 0)}
+        onSeeked={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
       />
 
       {isLoading && (
@@ -496,8 +507,17 @@ export function PlayerStage({
         <p className="text-sm font-medium">{streamName}</p>
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-        <div className="flex items-center gap-3 text-white text-sm pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent">
+        <TimeSlider
+          currentTime={currentTime}
+          duration={duration}
+          seekable={isSeekable}
+          onSeek={(t) => {
+            const v = videoRef.current;
+            if (v) v.currentTime = t;
+          }}
+        />
+        <div className="flex items-center gap-3 px-3 pb-3 text-white text-sm pointer-events-none">
           <span className="bg-red-600 px-2 py-0.5 rounded text-xs font-semibold">
             {isPlaying ? '● LIVE' : '⏸ PAUSED'}
           </span>
@@ -547,6 +567,76 @@ export function PlayerStage({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * TimeSlider — seek bar at the bottom of the player.
+ *
+ * Two states:
+ *   - `seekable` (VOD, finite duration): full slider, click/drag seeks via
+ *     `onSeek(newTime)`. Uses native <input type=range> for accessibility.
+ *   - not seekable (live stream, duration = Infinity): a static thin bar
+ *     rendered with the current buffered fraction if available. The
+ *     `currentTime` keeps incrementing because the player sits 10s behind
+ *     the live edge (hlsConfig.liveSyncDuration), so a live DVR within
+ *     the 80s backBuffer is technically possible — but exposing that as
+ *     a seek slider is fragile (different sources keep different window
+ *     sizes). For now, live just shows a static progress indicator.
+ *
+ * Why custom instead of native <video controls>: the bottom control bar
+ * already has custom buttons, and matching the visual language matters
+ * more than the small accessibility win from <video controls>.
+ */
+function TimeSlider({
+  currentTime,
+  duration,
+  seekable,
+  onSeek,
+}: {
+  currentTime: number;
+  duration: number;
+  seekable: boolean;
+  onSeek: (t: number) => void;
+}) {
+  const fmt = (s: number): string => {
+    if (!Number.isFinite(s) || s < 0) return '--:--';
+    const total = Math.floor(s);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+  };
+
+  if (!seekable) {
+    // Live: just a thin live bar with current time / (placeholder) duration.
+    return (
+      <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums select-none">
+        <span className="w-10 text-right">{fmt(currentTime)}</span>
+        <div className="flex-1 h-1 bg-red-500/30 rounded overflow-hidden">
+          <div className="h-full bg-red-500 w-full animate-pulse" />
+        </div>
+        <span className="w-10">LIVE</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums">
+      <span className="w-10 text-right">{fmt(currentTime)}</span>
+      <input
+        type="range"
+        min={0}
+        max={duration}
+        step={0.1}
+        value={currentTime}
+        onChange={(e) => onSeek(Number(e.target.value))}
+        className="flex-1 h-1 accent-blue-500 cursor-pointer"
+        aria-label="Seek"
+      />
+      <span className="w-10">{fmt(duration)}</span>
     </div>
   );
 }
