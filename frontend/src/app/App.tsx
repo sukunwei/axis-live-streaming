@@ -117,12 +117,12 @@ export default function App() {
             </p>
             {/*
               QualityHUD lives here as a sticky module: always rendered, sticks
-              to the top of the right column as the user scrolls. The component
-              itself returns null while the collector ref is empty (between
-              page load and PlayerStage mount) so this slot costs nothing.
+              to the top of the right column as the user scrolls. The HUD reads
+              `collectorRef.current` on every render — see the doc on its props
+              for why we pass the ref rather than a value.
             */}
             <div className="sticky top-4">
-              <QualityHUD collector={collectorRef.current} />
+              <QualityHUD collectorRef={collectorRef} />
             </div>
           </div>
         </div>
