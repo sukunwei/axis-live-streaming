@@ -61,9 +61,17 @@ _实测于 2026-06-02 本地 localhost 部署。运行 `scripts/measure.sh` 可�
 
 ### 故意没做
 
-- **hls.js 段请求 `fetchPriority: high`**：hls.js 1.5 默认 XHR loader 无法透传 priority；改 fetch loader 工程量 > 收益。等 hls.js 1.6+ 升上去再评估。
+- **hls.js 段请求 `fetchPriority: high`**：hls.js 1.5/1.6 默认 XHR loader 无法透传 priority；改 fetch loader 工程量 > 收益。1.6 已用 `fragLoadPolicy.default` 拿到更精确的加载预算控制，等后续上 1.7+ fetch-loader 升级再评估。
 - **HTTP/3 / QUIC**：平台层，< 1% 用户受益。
 - **主 manifest 也缓存到 SW**：HTTP cache + SWR 已经够，SW 缓存增 stale 风险。
+
+## hls.js 1.6 Migration
+
+- hls.js 已随 `^1.5.17` 自动升到 **1.6.16**（semver 范围允许 1.6）。
+- 旧 `fragLoadingTimeOut` / `fragLoadingMaxRetry` / `fragLoadingRetryDelay` 已 deprecated，迁移到 `fragLoadPolicy.default.{maxTimeToFirstByteMs, maxLoadTimeMs, timeoutRetry, errorRetry}`。新增 `maxLoadTimeMs` 总加载预算（之前 API 表达不了）。
+- 新增 `liveSyncOnStallIncrease: 1`（1.6 默认 0）：卡顿时自动给 `liveSyncDuration` 加 1s，让 buffer 有机会恢复。
+- 新增 `detectStallWithCurrentTimeMs: 1500`（默认 1000）：给短时 rebuffer 一点 grace，避免 HUD 误报 stall。
+- `hlsConfig.test.ts` 12 个断言全部迁移到新 API，外加 2 个 `makeHlsConfig` 单测。
 
 ### 跑法
 

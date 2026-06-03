@@ -23,6 +23,17 @@
  *   Tune 3: TTFF ~2s (8s initial buffer) / live edge distance 10-12s / very smooth
  *
  * For the demo: smoothness is 10x more important than low latency.
+ *
+ * hls.js 1.6 migration (this file):
+ *   - Replace legacy `fragLoadingTimeOut / fragLoadingMaxRetry / ...` with
+ *     `fragLoadPolicy.default.{maxTimeToFirstByteMs, maxLoadTimeMs,
+ *     timeoutRetry, errorRetry}`. Equivalent semantics, declarative shape,
+ *     and a separate per-load-budget cap (`maxLoadTimeMs`) which the legacy
+ *     API couldn't express — important for stuck fragments on flaky upstreams.
+ *   - Add `liveSyncOnStallIncrease` so stalls automatically grow
+ *     liveSyncDuration (1.6 feature, otherwise default is 0 → no recovery).
+ *   - Tighten `detectStallWithCurrentTimeMs` from default 1000ms to 1500ms
+ *     so a brief buffer dip doesn't trigger a stall event.
  */
 
 import type { HlsConfig } from 'hls.js';
@@ -35,6 +46,15 @@ const BASE_CONFIG: Partial<HlsConfig> = {
   liveMaxLatencyDuration: 15,
   maxLiveSyncPlaybackRate: 1.0,    // do not chase edge
   startPosition: -8,                // Tune 3: 0 -> -8 (start with 8s buffer)
+
+  // 1.6: on buffer stall, add this many seconds to liveSyncDuration to
+  // back off the live edge. Default 0 means stalls never recover.
+  liveSyncOnStallIncrease: 1,
+
+  // 1.6: how long with no append before we fire BUFFER_STALLED_ERROR.
+  // Slightly looser than default 1000ms so brief rebuffer hiccups don't
+  // look like a stall to the QualityHUD.
+  detectStallWithCurrentTimeMs: 1_500,
 
   // -- Buffer (Tune 3: longer) --
   maxBufferLength: 80,             // Tune 3: 60 -> 80
@@ -51,15 +71,36 @@ const BASE_CONFIG: Partial<HlsConfig> = {
   abrBandWidthFactor: 0.95,
   abrBandWidthUpFactor: 0.7,
 
-  // -- Retry / timeout --
+  // -- Manifest / level loading (legacy fields; not yet deprecated) --
   manifestLoadingTimeOut: 10_000,
   manifestLoadingMaxRetry: 4,
   manifestLoadingRetryDelay: 1_000,
   levelLoadingTimeOut: 10_000,
   levelLoadingMaxRetry: 4,
-  // 20s → 10s: abandon stuck fragments sooner (hls.js 1.5 has no abandonLoadTimeout)
-  fragLoadingTimeOut: 10_000,
-  fragLoadingMaxRetry: 6,
+
+  // -- Fragment loading (1.6 declarative policy, replaces fragLoading*) --
+  // - maxTimeToFirstByteMs: per-request TTFB budget
+  // - maxLoadTimeMs: per-fragment total budget (TTFB + body)
+  // - timeoutRetry: backoff for TTFB / load-timeout failures
+  // - errorRetry:   backoff for network / parse errors
+  fragLoadPolicy: {
+    default: {
+      maxTimeToFirstByteMs: 8_000,
+      maxLoadTimeMs: 20_000,
+      timeoutRetry: {
+        maxNumRetry: 6,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+        backoff: 'exponential',
+      },
+      errorRetry: {
+        maxNumRetry: 3,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+        backoff: 'exponential',
+      },
+    },
+  },
 };
 
 export const hlsConfig: Partial<HlsConfig> = BASE_CONFIG;
