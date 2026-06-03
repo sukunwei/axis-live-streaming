@@ -15,7 +15,8 @@ import type { MetricsCollector } from '../../live/MetricsCollector';
 import { Activity, Gauge, Clock, Zap, AlertTriangle, Timer } from 'lucide-react';
 
 interface QualityHUDProps {
-  collector: MetricsCollector;
+  /** May be null before PlayerStage mounts and populates the ref. */
+  collector: MetricsCollector | null;
   visible?: boolean;
 }
 
@@ -27,6 +28,7 @@ export function QualityHUD({ collector, visible = true }: QualityHUDProps) {
   }, []);
 
   if (!visible) return null;
+  if (!collector) return null;
   const m = collector.current;
   if (m.samplingAt === 0) return null;
 

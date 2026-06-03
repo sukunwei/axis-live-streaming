@@ -5,15 +5,19 @@
  * - Default-select the first channel
  * - Switching channels: setCurrent(id) triggers whole-component remount of PlayerStage via key={id}
  * - ChannelGrid triggers prefetch on hover (§4.2 fast switching)
+ * - Owns a shared MetricsCollector ref so QualityHUD can render as a sibling
+ *   below the video (overlay over the player frame is no longer needed).
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { PlayerStage } from '../components/Live/PlayerStage';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
+import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
 import { useSourceHealthSse } from '../hooks/useSourceHealthSse';
 import { useStreamingStore } from '../stores/streamingStore';
 import type { Channel } from '../lib/channels.config';
+import type { MetricsCollector } from '../live/MetricsCollector';
 
 export default function App() {
   const channels = useStreamingStore(s => s.channels);
@@ -22,6 +26,10 @@ export default function App() {
   const setCurrent = useStreamingStore(s => s.setCurrent);
 
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Shared collector: PlayerStage writes, QualityHUD reads (1Hz polling).
+  // Keying PlayerStage by channelId gives us a fresh collector per channel.
+  const collectorRef: MutableRefObject<MetricsCollector | null> = useRef(null);
 
   // Fetch channel list on mount
   useEffect(() => {
@@ -65,6 +73,7 @@ export default function App() {
                   streamName={currentChannel.name}
                   channelId={currentChannel.id}
                   backupStreamUrls={currentChannel.backupStreamUrls}
+                  collectorRef={collectorRef}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-500">
@@ -72,6 +81,9 @@ export default function App() {
                 </div>
               )}
             </div>
+            {currentChannel && (
+              <QualityHUD collector={collectorRef.current} />
+            )}
             {currentChannel && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex items-center justify-between">
                 <div>

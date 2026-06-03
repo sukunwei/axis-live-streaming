@@ -15,13 +15,12 @@
  *   - on backup switch: only swap loadSource, keep video element (preserves frame)
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import Hls from 'hls.js';
 import { hlsConfig } from '../../live/hlsConfig';
 import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
 import { MetricsCollector } from '../../live/MetricsCollector';
 import { useStreamingStore } from '../../stores/streamingStore';
-import { QualityHUD } from './QualityHUD';
 import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
 
 function isBufferFullDetail(details: string | undefined): boolean {
@@ -48,6 +47,12 @@ interface PlayerStageProps {
   channelId?: string;
   /** Backup sources (upstream direct URL) */
   backupStreamUrls?: readonly string[];
+  /**
+   * Optional externally-owned MetricsCollector ref. When provided, PlayerStage
+   * populates this ref instead of creating its own — lets a parent (App) share
+   * the same instance with a QualityHUD rendered as a sibling below the video.
+   */
+  collectorRef?: MutableRefObject<MetricsCollector | null>;
   onPlaying?: () => void;
   onError?: (kind: 'network' | 'media' | 'other', detail: string) => void;
 }
@@ -57,18 +62,20 @@ export function PlayerStage({
   streamName,
   channelId,
   backupStreamUrls = [],
+  collectorRef: externalCollectorRef,
   onError,
 }: PlayerStageProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const gateRef = useRef(new RecoveryGate());
-  const collectorRef = useRef(new MetricsCollector());
+  const internalCollectorRef = useRef<MetricsCollector | null>(null);
+  const collectorRef = externalCollectorRef ?? internalCollectorRef;
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentQuality, setCurrentQuality] = useState<string>('auto');
   const [isPlaying, setIsPlaying] = useState(false);
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const playerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -120,6 +127,13 @@ export function PlayerStage({
       hlsRef.current = null;
     }
 
+    // Reset/own the collector for this mount. If the parent provided an
+    // external ref (so a sibling QualityHUD can read it), assign a fresh
+    // instance; otherwise fall back to the internal ref. A reset on a
+    // fresh collector clears any prior sampling.
+    const collector: MetricsCollector = new MetricsCollector();
+    collectorRef.current = collector;
+
     // Start MetricsCollector
     // (attach after hls is created below)
 
@@ -158,11 +172,11 @@ export function PlayerStage({
 
     // Stall detection: waiting events → collector records stall
     video.addEventListener('waiting', () => {
-      collectorRef.current.onStallStart();
+      collector.onStallStart();
       setIsLoading(true);
     });
     video.addEventListener('canplay', () => {
-      collectorRef.current.onStallEnd();
+      collector.onStallEnd();
       setIsLoading(false);
     });
 
@@ -258,7 +272,7 @@ export function PlayerStage({
     });
 
     // Start MetricsCollector
-    collectorRef.current.attach(hls, video);
+    collector.attach(hls, video);
 
     // Send mount event
     if (channelId) {
@@ -271,7 +285,7 @@ export function PlayerStage({
     // Periodic sample upload: 5s while playing
     const sampleTimer = window.setInterval(() => {
       if (!channelId) return;
-      const m = collectorRef.current.current;
+      const m = collector.current;
       if (m.samplingAt === 0) return;
       void fetch('/api/log-playback', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -312,7 +326,7 @@ export function PlayerStage({
     return () => {
       // Final unmount sample
       if (channelId) {
-        const m = collectorRef.current.current;
+        const m = collector.current;
         if (m.samplingAt !== 0) {
           void fetch('/api/log-playback', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -334,7 +348,7 @@ export function PlayerStage({
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('fullscreenchange', onFsChange);
-      collectorRef.current.detach();
+      collector.detach();
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -347,6 +361,8 @@ export function PlayerStage({
       <video
         ref={videoRef}
         className="w-full h-full"
+        autoPlay
+        muted
         playsInline
         onPlay={() => { setIsPlaying(true); }}
         onPause={() => setIsPlaying(false)}
@@ -377,8 +393,6 @@ export function PlayerStage({
       <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-1.5 rounded">
         <p className="text-sm font-medium">{streamName}</p>
       </div>
-
-      <QualityHUD collector={collectorRef.current} />
 
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
         <div className="flex items-center gap-3 text-white text-sm pointer-events-none">
