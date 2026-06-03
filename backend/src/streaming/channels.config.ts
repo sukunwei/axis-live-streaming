@@ -9,22 +9,23 @@
  *    (master → variant → segment 200 OK under BROWSER_UA). The full iptv-org sports
  *    list was scanned in the same session — most (Abu Dhabi / Dubai / Pluto stitcher /
  *    beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport /
- *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. Only the 4 below
- *    survived. The discarded list lives in commit history if anyone wants to retry.
+ *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
+ *    lives in commit history if anyone wants to retry.
  *
- * Current config: 4 distinct CDN-backed sports/news + 1 VOD test
- *   - dw-english    public news (real, DW public broadcast) — live, 5 variants, Akamai
- *   - acc-network   college sports (ACCDN via Amagi) — live, 5 variants
- *   - nhl-hockey    ice hockey (NHL via Tubi/CloudFront) — live, 6 variants
- *   - draftkings    sports betting / analysis (Zype CDN) — live, 4 video + iframe + subs
- *   - fubo-sports   general sports (Fubo Sports Network via CloudFront) — live, 6 variants
- *   - apple-bipbop  Apple public test (HLS ABR multi-tier) — VOD loop, 4 variants
+ * Current config: 1 public news + 4 sports + (no test) — was 6 channels with
+ * apple-bipbop test, replaced it with Red Bull TV (1080p + Akamai + 6 variants)
+ * for a stronger live sports demo.
+ *   - dw-english    public news  (real, DW public broadcast) — Akamai, 5 variants
+ *   - red-bull-tv   extreme sports (Red Bull TV free live events) — Akamai, 6 variants, 1080p
+ *   - acc-network   college sports (ACCDN) — Amagi, 5 variants
+ *   - nhl-hockey    ice hockey (NHL) — Tubi/CloudFront, 6 variants
+ *   - draftkings    sports betting / analysis — Zype, 4 video variants + iframe + subs
+ *   - fubo-sports   general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
- * PRD "at least two sports" is satisfied by acc-network + nhl-hockey (two distinct
- * sport categories on two distinct CDNs). draftkings and fubo-sports were added after
- * an iptv-org scan turned up two more working sources; they live on Zype and
- * CloudFront respectively, so any of the 4 sports channels can fail over to any
- * other (proxy has 3 backup cross-references to choose from per channel).
+ * PRD "at least two sports" is satisfied by acc-network + nhl-hockey (or any
+ * pair). All 5 sports channels live on different CDNs (Akamai / Amagi / Tubi-CF /
+ * Zype / CloudFront), so a single CDN outage can only kill at most 1 of the
+ * 4 backup cross-references per channel.
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -55,6 +56,20 @@ export const channels: readonly Channel[] = [
     variants: 5,
     backupUrls: [
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+    ],
+  },
+  {
+    id: 'red-bull-tv',
+    sport: 'Extreme Sports',
+    name: 'Red Bull TV',
+    type: 'hls',
+    primaryUrl: 'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8',
+    masterPath: 'master.m3u8',
+    live: true,
+    variants: 6,  // 180p / 240p / 360p / 540p / 720p / 1080p (6660 kbps)
+    backupUrls: [
+      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+      'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
     ],
   },
   {
@@ -111,19 +126,6 @@ export const channels: readonly Channel[] = [
     backupUrls: [
       'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
-    ],
-  },
-  {
-    id: 'apple-bipbop',
-    sport: 'Test',
-    name: 'Apple BipBop Test',
-    type: 'hls',
-    primaryUrl: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8',
-    masterPath: 'bipbop_4x3_variant.m3u8',
-    live: false,  // VOD loop
-    variants: 4,
-    backupUrls: [
-      'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
     ],
   },
 ];
