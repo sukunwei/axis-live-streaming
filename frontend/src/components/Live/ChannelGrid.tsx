@@ -73,6 +73,16 @@ function ChannelCard({ channel, isActive, onSelect }: ChannelCardProps) {
                 Live
               </span>
             )}
+            <span
+              data-testid="channel-category"
+              className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
+                channel.category === 'sports'
+                  ? 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50'
+                  : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+              }`}
+            >
+              {channel.category === 'sports' ? 'Sports' : 'Other'}
+            </span>
             <span className="ml-auto flex-shrink-0">
               <SmoothnessIcon score={channel.smoothnessScore} />
             </span>

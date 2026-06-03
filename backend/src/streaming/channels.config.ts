@@ -12,35 +12,44 @@
  *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
  *    lives in commit history if anyone wants to retry.
  *
- * Current config: 5 sports-only channels. NHL was removed 2026-06-03 because
- * the SSE-driven failover (PlayerStage.tsx, the `health === 'down'` effect)
- * switches to the first `backupUrls` entry, which for NHL was ACCDN —
- * a different channel entirely (college sports), not the same content
- * from a different CDN. The "auto switch to wrong content" UX is misleading
- * and was visible enough that keeping NHL in the registry actively hurt the
- * demo. (The underlying design issue — that backupUrls currently points to
- * other channels instead of "same channel, different CDN" — remains for the
- * other 5 channels; the README Next Steps calls it out as a follow-up.)
+ * Current config: 5 sports + 1 others = 6 channels total.
+ *
+ * NHL was removed 2026-06-03 because the SSE-driven failover
+ * (PlayerStage.tsx, the `health === 'down'` effect) switches to the
+ * first `backupUrls` entry, which for NHL was ACCDN — a different
+ * channel entirely (college sports), not the same content from a
+ * different CDN. The "auto switch to wrong content" UX is misleading
+ * and was visible enough that keeping NHL in the registry actively
+ * hurt the demo. (The underlying design issue — that backupUrls
+ * currently points to other channels instead of "same content from
+ * a different CDN" — remains for the other channels; the README
+ * Next Steps calls it out as a follow-up.)
+ *
+ * Registry is grouped: `sports` first, `others` last. The /channels
+ * endpoint preserves that grouping when sorting (sports first by
+ * smoothnessScore desc, then others by the same).
+ *
+ *   sports:
  *   - red-bull-tv      extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
- *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor w/ ad insertion) — 5 variants, 1080p
+ *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor) — 5 variants, 1080p
  *   - acc-network      college sports (ACCDN) — Amagi, 5 variants
  *   - draftkings       sports betting / analysis — Zype, 4 video variants + iframe + subs
  *   - fubo-sports      general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
- * PRD "at least two sports" is more than satisfied — 4 distinct sport categories:
- * extreme (Red Bull), college (ACCDN), and general/betting (DraftKings + Fubo).
- * All 5 channels live on different CDNs (Akamai / Amagi / Zype / CloudFront +
- * AWS MediaTailor for the ES variant), so a single CDN outage can only kill
- * at most 1 of the 2 backup cross-references per channel.
+ *   others:
+ *   - livestar         general live (Live Star HD, single-bitrate media playlist) — 1 variant, 720p
  *
  * Field notes:
- *   - primaryUrl: Full URL of upstream master
+ *   - primaryUrl: Full URL of upstream master (or media playlist for single-bitrate)
  *   - masterPath: relative path, browser requests /hls/:channel/<masterPath>
  */
 
+export type ChannelCategory = 'sports' | 'others';
+
 export interface Channel {
   readonly id: string;
-  readonly sport: string;
+  readonly sport: string;            // human label shown next to the channel name
+  readonly category: ChannelCategory;
   readonly name: string;
   readonly type: 'hls';
   readonly primaryUrl: string;
@@ -50,10 +59,12 @@ export interface Channel {
   readonly backupUrls: readonly string[];
 }
 
-export const channels: readonly Channel[] = [
+// === sports =================================================================
+const sportsChannels: readonly Channel[] = [
   {
     id: 'red-bull-tv',
     sport: 'Extreme Sports',
+    category: 'sports',
     name: 'Red Bull TV',
     type: 'hls',
     primaryUrl: 'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8',
@@ -68,6 +79,7 @@ export const channels: readonly Channel[] = [
   {
     id: 'red-bull-tv-es',
     sport: 'Extreme Sports (ES)',
+    category: 'sports',
     name: 'Red Bull TV ES (LATAM)',
     type: 'hls',
     primaryUrl: 'https://886bd3fbc782459f8de7555d32d7e9ce.mediatailor.us-west-2.amazonaws.com/v1/master/ba62fe743df0fe93366eba3a257d792884136c7f/LINEAR-957-WORBLATAMESFAST-WHALETVPLUS/957/whaletvplus/hls/master/playlist.m3u8',
@@ -85,6 +97,7 @@ export const channels: readonly Channel[] = [
   {
     id: 'acc-network',
     sport: 'College Sports',
+    category: 'sports',
     name: 'ACC Digital Network',
     type: 'hls',
     primaryUrl: 'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
@@ -99,6 +112,7 @@ export const channels: readonly Channel[] = [
   {
     id: 'draftkings',
     sport: 'Sports Betting',
+    category: 'sports',
     name: 'DraftKings Network',
     type: 'hls',
     primaryUrl: 'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
@@ -113,6 +127,7 @@ export const channels: readonly Channel[] = [
   {
     id: 'fubo-sports',
     sport: 'General Sports',
+    category: 'sports',
     name: 'Fubo Sports Network',
     type: 'hls',
     primaryUrl: 'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
@@ -125,3 +140,24 @@ export const channels: readonly Channel[] = [
     ],
   },
 ];
+
+// === others =================================================================
+const othersChannels: readonly Channel[] = [
+  {
+    id: 'livestar',
+    sport: 'General',
+    category: 'others',
+    name: 'Live Star HD',
+    type: 'hls',
+    // Single-bitrate media playlist (no master, no variants). hls.js consumes
+    // it directly. The proxy serves it as /hls/livestar/star_inthd.m3u8 and
+    // the relative segment paths get rewritten to /hls/livestar/<seg>.ts.
+    primaryUrl: 'https://livestar.siliconweb.com/starvod/star_int/star_inthd.m3u8',
+    masterPath: 'star_inthd.m3u8',
+    live: true,
+    variants: 1,  // single bitrate; 'hd' filename suggests 720p
+    backupUrls: [], // intentionally empty — see "SSE-driven failover" caveat in README
+  },
+];
+
+export const channels: readonly Channel[] = [...sportsChannels, ...othersChannels];

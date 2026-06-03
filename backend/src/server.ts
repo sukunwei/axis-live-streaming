@@ -82,6 +82,7 @@ const httpServer = http.createServer(async (req, res) => {
         return {
           id: c.id,
           sport: c.sport,
+          category: c.category,
           name: c.name,
           type: c.type,
           masterPath: c.masterPath,
@@ -94,7 +95,13 @@ const httpServer = http.createServer(async (req, res) => {
           observed: observed ?? null,
         };
       })
-      .sort((a, b) => b.smoothnessScore - a.smoothnessScore);  // strong → weak
+      .sort((a, b) => {
+        // Sports group first, then others; within each group, strongest smoothness first.
+        if (a.category !== b.category) {
+          return a.category === 'sports' ? -1 : 1;
+        }
+        return b.smoothnessScore - a.smoothnessScore;
+      });
 
     // SWR cache: channel list changes rarely (registry + smoothness score).
     // 60s fresh + 600s stale-while-revalidate keeps clients snappy on

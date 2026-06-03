@@ -86,7 +86,9 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 
 > 当前注册表见 [`backend/src/streaming/channels.config.ts`](backend/src/streaming/channels.config.ts)。下表是各频道**实际接入**的源；上游失效时可通过修改注册表切换，proxy 层无需改动。
 >
-> 所有频道都是体育内容。`dw-english`（DW 英语新闻）2026-06-03 移除；`nhl-hockey`（NHL）2026-06-03 也移除——理由见下面"⚠ 已知问题"。
+> 频道按 `category` 字段分组（`sports` / `others`），在 `/channels` 响应里 sports 在前 others 在后，同组内按 smoothnessScore 降序。
+
+### sports
 
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
@@ -96,9 +98,13 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 | `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network，4 视频档 + I-frame + 字幕，Zype CDN |
 | `fubo-sports` | General Sports | `dnf08l6u6uxnz.cloudfront.net/master.m3u8` | Fubo Sports Network，6 个变体，CloudFront CDN |
 
-PRD "至少两种运动"远超满足 —— 3 个明确不同的体育类别：extreme (Red Bull)、college (ACCDN)、general/betting (DraftKings + Fubo)。`draftkings` 内容是体育博彩/分析/赛事直播，**归为体育类**（与 ESPN Bet、Fox Bet 同类）。
+### others
 
-**Failover cross-references**：每个 sports 频道列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。**（⚠ 已知问题，详见下文）**
+| Channel | Sport | Upstream | Notes |
+|---------|-------|----------|-------|
+| `livestar` | General | `livestar.siliconweb.com/starvod/star_int/star_inthd.m3u8` | Live Star HD —— **单档 media playlist**（无 master / 无 variants），12s 段，720p 推测（`hd` 文件名），live。`backupUrls` 故意为空：没有同内容多 CDN 备选，**走 SSE failover 反而会把用户切到别处内容**（见下文"已知问题"）。 |
+
+**Failover cross-references**：每个 sports 频道列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。`livestar` 没列。**（⚠ 已知问题，详见下文）**
 
 ### ⚠ 已知问题：SSE-driven failover 切到"错内容"
 
