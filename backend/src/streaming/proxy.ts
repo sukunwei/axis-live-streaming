@@ -23,6 +23,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { RequestOptions } from 'http';
 import { getChannel } from './registry.js';
 import { isBroken } from './mockFailure.js';
+import { LruCache } from './manifestCache.js';
+import { sendGzipped } from '../http/gzip.js';
 
 const SEGMENT_TTL_SEC = 30;
 const MANIFEST_CACHE_TTL_MS = 2_000;
@@ -39,28 +41,9 @@ const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, maxFreeSocke
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 });
 
 const inflightManifest = new Map<string, Promise<FetchedText>>();
-const upstreamManifestCache = new Map<string, { fetched: FetchedText; expiresAt: number }>();
-
-/** LRU put: evict the oldest entry if we're at capacity, then insert. */
-function manifestCachePut(
-  key: string,
-  value: { fetched: FetchedText; expiresAt: number },
-): void {
-  if (!upstreamManifestCache.has(key) && upstreamManifestCache.size >= MANIFEST_CACHE_MAX_ENTRIES) {
-    const oldest = upstreamManifestCache.keys().next().value;
-    if (oldest !== undefined) upstreamManifestCache.delete(oldest);
-  }
-  upstreamManifestCache.set(key, value);
-}
-
-/** LRU touch: re-insert on hit so the key moves to the back of the eviction order. */
-function manifestCacheTouch(key: string): void {
-  const v = upstreamManifestCache.get(key);
-  if (v !== undefined) {
-    upstreamManifestCache.delete(key);
-    upstreamManifestCache.set(key, v);
-  }
-}
+const upstreamManifestCache = new LruCache<string, { fetched: FetchedText; expiresAt: number }>(
+  MANIFEST_CACHE_MAX_ENTRIES,
+);
 
 function upstreamGetOptions(parsed: URL): RequestOptions {
   return {
@@ -107,12 +90,15 @@ export async function handleHlsProxy(
       if (upstreamUrl.endsWith('.m3u8')) {
         const { text } = await fetchTextCached(upstreamUrl);
         const rewritten = rewriteManifest(text, channelId, ch.primaryUrl, upstreamUrl, false);
-        res.writeHead(200, {
-          'Content-Type': 'application/vnd.apple.mpegurl',
-          'Cache-Control': MANIFEST_CACHE_CONTROL,
-          'Access-Control-Allow-Origin': '*',
+        sendGzipped(req, res, {
+          status: 200,
+          contentType: 'application/vnd.apple.mpegurl',
+          body: rewritten,
+          extra: {
+            'Cache-Control': MANIFEST_CACHE_CONTROL,
+            'Access-Control-Allow-Origin': '*',
+          },
         });
-        res.end(rewritten);
       } else {
         await proxySegment(req, res, upstreamUrl);
       }
@@ -131,7 +117,7 @@ export async function handleHlsProxy(
 
     if (relPath.endsWith('.m3u8')) {
       const isMaster = upstream.pathname === new URL(ch.primaryUrl).pathname;
-      await proxyManifest(res, upstreamUrl, ch.primaryUrl, channelId, isMaster, isLive);
+      await proxyManifest(req, res, upstreamUrl, ch.primaryUrl, channelId, isMaster, isLive);
       return;
     }
     await proxySegment(req, res, upstreamUrl);
@@ -153,6 +139,7 @@ export async function handleHlsProxy(
 
 // -- manifest: Fetch upstream → rewrite segment URLs → return ----------------------
 async function proxyManifest(
+  req: IncomingMessage,
   res: ServerResponse,
   upstreamUrl: string,
   primaryUrl: string,
@@ -183,12 +170,15 @@ async function proxyManifest(
   }
 
   const rewritten = rewriteManifest(text, channelId, primaryUrl, upstreamUrl, isMaster);
-  res.writeHead(200, {
-    'Content-Type': 'application/vnd.apple.mpegurl',
-    'Cache-Control': MANIFEST_CACHE_CONTROL,
-    'Access-Control-Allow-Origin': '*',
+  sendGzipped(req, res, {
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl',
+    body: rewritten,
+    extra: {
+      'Cache-Control': MANIFEST_CACHE_CONTROL,
+      'Access-Control-Allow-Origin': '*',
+    },
   });
-  res.end(rewritten);
 }
 
 function rewriteManifest(
@@ -376,13 +366,10 @@ function fetchTextShared(key: string, fetchFn: () => Promise<FetchedText>): Prom
 /** 2s in-process cache + collapsing — multi-tab / prefetch share one upstream hit. */
 async function fetchTextCached(upstreamUrl: string): Promise<FetchedText> {
   const now = Date.now();
-  const hit = upstreamManifestCache.get(upstreamUrl);
-  if (hit && hit.expiresAt > now) {
-    manifestCacheTouch(upstreamUrl);  // bump LRU position
-    return hit.fetched;
-  }
+  const hit = upstreamManifestCache.get(upstreamUrl);  // bumps LRU
+  if (hit && hit.expiresAt > now) return hit.fetched;
   const fetched = await fetchTextShared(`manifest:${upstreamUrl}`, () => fetchText(upstreamUrl));
-  manifestCachePut(upstreamUrl, { fetched, expiresAt: now + MANIFEST_CACHE_TTL_MS });
+  upstreamManifestCache.set(upstreamUrl, { fetched, expiresAt: now + MANIFEST_CACHE_TTL_MS });
   return fetched;
 }
 

@@ -19,6 +19,7 @@ import { startHealthMonitor, getAllHealth } from './streaming/healthMonitor.js';
 import { startSseBroadcaster, handleSse } from './streaming/statusSse.js';
 import { mountMockFailure, handleMockRoute } from './streaming/mockFailure.js';
 import { recordPlayback, getPlaybackSummary } from './streaming/playbackLog.js';
+import { sendGzipped } from './http/gzip.js';
 
 /**
  * Smoothness score (0-5).
@@ -98,20 +99,22 @@ const httpServer = http.createServer(async (req, res) => {
     // SWR cache: channel list changes rarely (registry + smoothness score).
     // 60s fresh + 600s stale-while-revalidate keeps clients snappy on
     // re-mount without making the UI feel stale.
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'public, max-age=60, stale-while-revalidate=600',
+    sendGzipped(req, res, {
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ channels: enriched, upstreamOrigins }),
+      extra: { 'Cache-Control': 'public, max-age=60, stale-while-revalidate=600' },
     });
-    res.end(JSON.stringify({ channels: enriched, upstreamOrigins }));
     return;
   }
 
   if (url.pathname === '/api/playback-summary' && req.method === 'GET') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+    sendGzipped(req, res, {
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(getPlaybackSummary()),
+      extra: { 'Access-Control-Allow-Origin': '*' },
     });
-    res.end(JSON.stringify(getPlaybackSummary()));
     return;
   }
 
