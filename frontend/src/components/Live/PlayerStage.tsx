@@ -610,8 +610,14 @@ function TimeSlider({
     return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
   };
 
+  // While the user is dragging, freeze the displayed value at what they
+  // picked — otherwise onTimeUpdate keeps pushing currentTime forward and
+  // the thumb visibly snaps back to the right while you drag left.
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragValue, setDragValue] = useState(0);
+  const displayTime = isDragging ? dragValue : currentTime;
+
   if (!seekable) {
-    // Live: just a thin live bar with current time / (placeholder) duration.
     return (
       <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums select-none">
         <span className="w-10 text-right">{fmt(currentTime)}</span>
@@ -625,14 +631,24 @@ function TimeSlider({
 
   return (
     <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums">
-      <span className="w-10 text-right">{fmt(currentTime)}</span>
+      <span className="w-10 text-right">{fmt(displayTime)}</span>
       <input
         type="range"
         min={0}
         max={duration}
         step={0.1}
-        value={currentTime}
-        onChange={(e) => onSeek(Number(e.target.value))}
+        value={displayTime}
+        onChange={(e) => {
+          const t = Number(e.target.value);
+          setDragValue(t);
+          onSeek(t);
+        }}
+        onPointerDown={() => {
+          setIsDragging(true);
+          setDragValue(currentTime);
+        }}
+        onPointerUp={() => setIsDragging(false)}
+        onPointerCancel={() => setIsDragging(false)}
         className="flex-1 h-1 accent-blue-500 cursor-pointer"
         aria-label="Seek"
       />
