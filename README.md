@@ -84,14 +84,52 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 
 ## Source Strategy
 
-| Channel | Sport | Source | CORS |
-|---------|-------|--------|------|
-| Red Bull TV | Extreme Sports | Akamai HLS | ✓ |
-| Stadium | College Sports | Akamai HLS | ✓ |
-| NASA TV | Public | Akamai HLS | ✓ |
-| Mux Test Stream | Test | test-streams.mux.dev | ✓ |
+> 当前注册表见 [`backend/src/streaming/channels.config.ts`](backend/src/streaming/channels.config.ts)。下表是各频道**实际接入**的源；上游失效时可通过修改注册表切换，proxy 层无需改动。
 
-> 删除了原 Figma 设计里的 Fox Sports（DNS 失效）和 Fight Network（TLS 证书不匹配）——这两个 URL 已不可用。
+| Channel | Sport | Upstream | Notes |
+|---------|-------|----------|-------|
+| `dw-english` | Public News | `dwamdstream102.akamaized.net/hls/live/2015525/dwstream102/index.m3u8` | DW English 24/7 live，5 个 ABR 变体，Akamai CDN |
+| `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network（ACC 大学体育），5 个变体，Amagi 平台 |
+| `nhl-hockey` | Ice Hockey | `aegis-cloudfront-1.tubi.video/.../1f4cbb33.../playlist.m3u8` | NHL（冰球），6 个变体，Tubi / CloudFront CDN |
+| `apple-bipbop` | Test | `devstreaming-cdn.apple.com/.../bipbop_4x3_variant.m3u8` | Apple 公共 HLS 测试流（VOD 循环，4 个变体） |
+
+PRD "至少两种运动"通过 `acc-network`（college football/basketball）和 `nhl-hockey`（ice hockey）覆盖，两路源在 CDN、变体数、ABR 行为上都有差异，failover 故事可演示。
+
+> **关于源稳定性**：所有 URL 在 2026-06-03 已 curl 端到端验证（master 200 → variant 200 → segment 200）。公共源随时可能失效，部署前可跑 `scripts/test-sources.sh` 复测。
+
+## Live Demo
+
+部署到 Vercel/Railway 或用 tunnel 暴露本地 dev 服务器。**最快 5 分钟**：
+
+### ngrok（推荐，最快）
+
+```bash
+# 安装（macOS）
+brew install ngrok
+ngrok config add-authtoken <your-token>    # 一次性，去 ngrok.com 注册
+
+# 启动后端
+pnpm --filter backend dev                # localhost:5174
+
+# 另开一个 terminal，暴露 5174
+ngrok http 5174
+# 输出 Forwarding 行就是公网 URL，例如：
+#   https://a1b2c3d4.ngrok-free.app → http://localhost:5174
+```
+
+然后前端 Vite dev 服务器跑在 5173 也用 ngrok 暴露（或者直接改 `frontend/.env` 把 `VITE_API_BASE` 指到后端的 ngrok URL）。
+
+### cloudflared（免费、无需账号）
+
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://localhost:5174
+# 输出 https://<random>.trycloudflare.com → http://localhost:5174
+```
+
+### 部署到 Railway + Vercel（更稳，30-60 min）
+
+参考 `docs/streaming-technical-design.md` §1.3：后端 `railway up`、前端 `vercel --prod`、Vercel 环境变量 `VITE_API_BASE` 指 Railway URL。
 
 ## Next Steps (more time would do)
 
@@ -99,6 +137,7 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 2. **WebRTC / WHEP 低延迟通道** — MediaMTX 输出 WebRTC，对核心赛事压到亚秒级
 3. **Redis 段缓存外置** — 真正扇出到多实例 + CDN 前置
 4. **backup 走 proxy** — 当前 failover 时直连上游，改为 `/hls-proxy?u=<encoded>` 统一代理
+5. **真 sports 源扩展** — 当前 PRD "2 sports" 用 ACCDN + NHL 满足；下一步可加 Pluto TV (Pluto TV Sports) / Tubi (Fox Sports) 拿到更多品类
 
 ## License
 

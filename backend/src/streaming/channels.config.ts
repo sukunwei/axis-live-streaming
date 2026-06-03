@@ -1,18 +1,23 @@
 /**
- * Channel registry — single source of truth (§6.4). 
+ * Channel registry — single source of truth (§6.4).
  *
- * Statically loaded at runtime. shared between dev/prod. Missing field fails startup. 
- * Must curl-verify each URL on build day (§1.3 discipline). 
+ * Statically loaded at runtime. shared between dev/prod. Missing field fails startup.
+ * Must curl-verify each URL on build day (§1.3 discipline).
  *
- * ⚠ Public HLS source pitfall: upstream can fail at any time (master 200 but variants 404, or TLS dies). 
- *    2026-06-02 measured: redbull, stadium both purged; france 24 upstream TLS died. 
- *    must run ./scripts/test-sources.sh before deployment. 
+ * ⚠ Public HLS source pitfall: upstream can fail at any time (master 200 but variants 404,
+ *    or TLS dies). 2026-06-02 measured: redbull, stadium both purged; france 24 upstream
+ *    TLS died. The two real sports sources below were re-verified end-to-end on 2026-06-03
+ *    (master + variant + segment 200 OK under BROWSER_UA).
  *
- * Current config: 1 real public channel + 3 public test sources (PRD R2 "two sports" partially met)
- *   - dw-english    public news (real, DW public broadcast)
- *   - mux-llhls     LL-HLS test (demo §4.1 low-latency tuning)
- *   - mux           VOD loop test (multi-tier ABR)
- *   - apple-bipbop  Apple public test (HLS ABR multi-tier)
+ * Current config: 2 public news / sports + 2 test sources
+ *   - dw-english    public news (real, DW public broadcast) — live, 5 variants
+ *   - acc-network   college sports (real, ACC Digital Network via Amagi) — live, 5 variants
+ *   - nhl-hockey    ice hockey (real, NHL via Tubi/CloudFront) — live, 6 variants
+ *   - apple-bipbop  Apple public test (HLS ABR multi-tier) — VOD loop
+ *
+ * Meets PRD requirement "at least two sports": ACCDN (college football/basketball) and
+ * NHL (ice hockey) are two different sports categories with different upstream CDNs
+ * (Amagi vs. CloudFront) for failover-story contrast.
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -40,35 +45,35 @@ export const channels: readonly Channel[] = [
     primaryUrl: 'https://dwamdstream102.akamaized.net/hls/live/2015525/dwstream102/index.m3u8',
     masterPath: 'index.m3u8',
     live: true,
-    variants: 5,  // 5 ABR tiers (measured) + caption track
-    backupUrls: [
-      'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-    ],
-  },
-  {
-    id: 'mux-llhls',
-    sport: 'Test (LL-HLS)',
-    name: 'Mux LL-HLS Test',
-    type: 'hls',
-    primaryUrl: 'https://test-streams.mux.dev/test_001/stream.m3u8',
-    masterPath: 'stream.m3u8',
-    live: false,  // public test source is a loop
-    variants: 4,
-    backupUrls: [
-      'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-    ],
-  },
-  {
-    id: 'mux',
-    sport: 'Test',
-    name: 'Mux VOD Test',
-    type: 'hls',
-    primaryUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-    masterPath: 'x36xhzz.m3u8',
-    live: false,  // VOD loop
     variants: 5,
     backupUrls: [
-      'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8',
+      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+    ],
+  },
+  {
+    id: 'acc-network',
+    sport: 'College Sports',
+    name: 'ACC Digital Network',
+    type: 'hls',
+    primaryUrl: 'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+    masterPath: 'playlist.m3u8',
+    live: true,
+    variants: 5,  // 240p / 360p / 480p / 720p / 1080p
+    backupUrls: [
+      'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
+    ],
+  },
+  {
+    id: 'nhl-hockey',
+    sport: 'Ice Hockey',
+    name: 'NHL',
+    type: 'hls',
+    primaryUrl: 'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
+    masterPath: 'playlist.m3u8',
+    live: true,
+    variants: 6,
+    backupUrls: [
+      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
     ],
   },
   {
