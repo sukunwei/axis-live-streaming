@@ -55,6 +55,54 @@ function sendLog(payload: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Try to start playback with audio on. Most browsers block unmuted autoplay
+ * unless the user has previously interacted with the origin (Chrome MEI,
+ * Safari whitelist) or we're on a privileged context (localhost). When
+ * blocked, fall back to muted playback and register a one-shot listener on
+ * the first user interaction (click / keydown / touchstart) to unmute.
+ */
+function playWithAudio(
+  video: HTMLVideoElement,
+  setMutedState: (muted: boolean) => void,
+): void {
+  video.muted = false;
+  setMutedState(false);
+  const attempt = video.play();
+  if (attempt === undefined) {
+    // Some older WebKit returns undefined instead of a Promise.
+    return;
+  }
+  void attempt
+    .then(() => {
+      // Playback started with sound — nothing more to do.
+    })
+    .catch((err: Error) => {
+      if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
+        // eslint-disable-next-line no-console
+        console.log('[hls] play error:', err.message);
+        return;
+      }
+      // No user gesture yet — start muted, then unlock on first interaction.
+      video.muted = true;
+      setMutedState(true);
+      void video.play().catch((err2: Error) => {
+        // eslint-disable-next-line no-console
+        console.log('[hls] muted autoplay also blocked:', err2.message);
+      });
+      const unlock = (): void => {
+        video.muted = false;
+        setMutedState(false);
+        document.removeEventListener('click', unlock, true);
+        document.removeEventListener('keydown', unlock, true);
+        document.removeEventListener('touchstart', unlock, true);
+      };
+      document.addEventListener('click', unlock, true);
+      document.addEventListener('keydown', unlock, true);
+      document.addEventListener('touchstart', unlock, true);
+    });
+}
+
 interface PlayerStageProps {
   /** Proxied m3u8 URL (frontend never connects to upstream directly) */
   streamUrl: string;
@@ -90,7 +138,7 @@ export function PlayerStage({
   const [currentQuality, setCurrentQuality] = useState<string>('auto');
   const [isPlaying, setIsPlaying] = useState(false);
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
-  const [isMuted, setIsMuted] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const playerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -157,7 +205,7 @@ export function PlayerStage({
         video.src = streamUrl;
         const onLoaded = (): void => {
           setIsLoading(false);
-          void video.play().catch(() => setIsPlaying(false));
+          playWithAudio(video, setIsMuted);
         };
         const onError = (): void => {
           setErrorMsg('Safari HLS load failed');
@@ -199,11 +247,7 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.log(`[hls] manifest parsed, ${data.levels.length} levels`);
       setIsLoading(false);
-      void video.play().catch((err: Error) => {
-        // eslint-disable-next-line no-console
-        console.log('[hls] autoplay prevented:', err.message);
-        setIsPlaying(false);
-      });
+      playWithAudio(video, setIsMuted);
     });
 
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
@@ -368,7 +412,6 @@ export function PlayerStage({
         ref={videoRef}
         className="w-full h-full"
         autoPlay
-        muted
         playsInline
         onPlay={() => { setIsPlaying(true); }}
         onPause={() => setIsPlaying(false)}
