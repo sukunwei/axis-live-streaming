@@ -93,10 +93,8 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
 | `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV 全球版（直 Akamai），6 档到 **1080p**（含 180p/240p/360p/540p）|
-| `red-bull-tv-es` | Extreme Sports (ES) | `886bd3fbc782459f8de7555d32d7e9ce.mediatailor.us-west-2.amazonaws.com/v1/master/.../LINEAR-957-WORBLATAMESFAST-WHALETVPLUS/.../playlist.m3u8` | Red Bull TV LATAM/Spanish 版（AWS MediaTailor 做广告插入），5 档到 1080p，seg 实际从 `freqsyndlin.redbull.com` 出，Spanish CC 轨道 |
 | `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network（ACC 大学体育），5 个变体，Amagi 平台 |
 | `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network，4 视频档 + I-frame + 字幕，Zype CDN |
-| `fubo-sports` | General Sports | `dnf08l6u6uxnz.cloudfront.net/master.m3u8` | Fubo Sports Network，6 个变体，CloudFront CDN |
 
 ### others
 
