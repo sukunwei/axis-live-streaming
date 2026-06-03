@@ -5,8 +5,9 @@
  * - Default-select the first channel
  * - Switching channels: setCurrent(id) triggers whole-component remount of PlayerStage via key={id}
  * - ChannelGrid triggers prefetch on hover (§4.2 fast switching)
- * - Owns a shared MetricsCollector ref so QualityHUD can render as a sibling
- *   below the video (overlay over the player frame is no longer needed).
+ * - Owns a shared MetricsCollector ref so QualityHUD can render as a sticky
+ *   panel in the right column under ChannelGrid. Sticky positioning keeps
+ *   bitrate / buffer / latency in view while the user scrolls the page.
  * - PlayerStage is lazy-loaded so the hls.js chunk (~80KB gz) doesn't block
  *   the initial render of the channel list / SSE hookup.
  */
@@ -75,7 +76,7 @@ export default function App() {
         <span className="text-xs text-zinc-500">Live Sports Streaming</span>
       </header>
       <main className="max-w-7xl mx-auto px-6 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           <div className="lg:col-span-2 space-y-4">
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
@@ -96,9 +97,6 @@ export default function App() {
               )}
             </div>
             {currentChannel && (
-              <QualityHUD collector={collectorRef.current} />
-            )}
-            {currentChannel && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">{currentChannel.name}</h2>
@@ -110,13 +108,22 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 space-y-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
               <ChannelGrid />
             </div>
-            <p className="mt-3 text-xs text-zinc-500 px-1">
+            <p className="text-xs text-zinc-500 px-1">
               Hover a channel to prefetch its master. Click to switch. Source health pushed via SSE.
             </p>
+            {/*
+              QualityHUD lives here as a sticky module: always rendered, sticks
+              to the top of the right column as the user scrolls. The component
+              itself returns null while the collector ref is empty (between
+              page load and PlayerStage mount) so this slot costs nothing.
+            */}
+            <div className="sticky top-4">
+              <QualityHUD collector={collectorRef.current} />
+            </div>
           </div>
         </div>
       </main>
