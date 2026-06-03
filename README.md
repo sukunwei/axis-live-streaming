@@ -52,6 +52,36 @@ pnpm start              # boots backend (:5174) + frontend (:5173)
 
 打开 http://localhost:5173，应该看到 4 频道网格 + 主播放器。
 
+## Architecture (TL;DR)
+
+```
+Upstream HLS ──► Node proxy ──► hls.js (browser) ──► MSE / <video>
+                    │
+                    ├── manifest rewrite (same-origin proxy paths)
+                    ├── segment stream pipe (no buffer, immutable + 304)
+                    ├── manifest cache (LRU 100, 2s TTL, request collapsing)
+                    ├── gzip on text responses (manifests + /channels + /api)
+                    ├── health monitor (5s probe)
+                    │      └── SSE → SourceStatusBadge + RecoveryGate
+                    └── mock injector (POST /mock/break/:id for demo)
+```
+
+- **Frontend**: React 18 + Vite + hls.js 1.6 + Zustand. PlayerStage direct import (lazy import was tried and reverted — see TTFF regression in commit history).
+- **Backend**: Node + TypeScript + native `http` + `ws`. Single in-process instance; in-memory caches with proper LRU eviction.
+- **Data flow**: Browser **only** connects to own backend WS/HTTP. Never direct to upstream — proxy is the single source of truth, hides upstream topology, and centralises caching.
+
+Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-technical-design.md).
+
+## Trade-offs
+
+- **hls.js direct (no Video.js / Shaka wrapper)** — full control over buffer / ABR / error recovery, but we own the failure modes. Wrappers would have hidden the RecoveryGate + custom frag-load-policy tuning that this build depends on.
+- **Single-instance backend, in-process** — fast to ship, no horizontal scale needed for demo. Caches (manifest, LRU) and SSE broadcaster all live in one process. Production would need Redis-backed cache + multi-instance coordination.
+- **No WebRTC / no MediaMTX** — dropped to fit 48h. Documented as a next step. Current architecture is "HLS in, HLS out" only.
+- **`backupStreamUrls` bypass the proxy on failover** — M3 simplification; failover reaches upstream directly. Production should reroute through `/hls-proxy?u=<encoded>` to keep the source-hiding invariant intact.
+- **Mock injector only in dev** — `POST /mock/break/:id` returns 503 in production. Kept gated so it never accidentally trips a real outage.
+- **Smoothness-first, not latency-first** — Tune 3 of `hlsConfig` trades ~2s of edge distance for a stable 8–10s buffer. The PRD weights smoothness / rebuffering more than raw latency, so this is the right tilt for the assignment.
+- **Static `hlsConfig` + `makeHlsConfig()` factory split** — base tuning is the public API the tests pin; the factory injects `abrEwmaDefaultEstimate` from `navigator.connection` at mount time. Tests stay deterministic, runtime stays adaptive.
+
 ## Source Strategy
 
 | Channel | Sport | Source | CORS |
