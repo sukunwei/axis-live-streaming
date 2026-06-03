@@ -8,11 +8,15 @@
  * - Owns a shared MetricsCollector ref so QualityHUD can render as a sticky
  *   panel in the right column under ChannelGrid. Sticky positioning keeps
  *   bitrate / buffer / latency in view while the user scrolls the page.
- * - PlayerStage is lazy-loaded so the hls.js chunk (~80KB gz) doesn't block
- *   the initial render of the channel list / SSE hookup.
+ * - PlayerStage is imported directly (no React.lazy). The hls.js chunk
+ *   (~80KB gz) used to be split out via lazy import, but the chunk fetch
+ *   before mount added ~100-300ms to TTFF on first load. For a video
+ *   site, TTFF dominates the perceived-perf budget; a slightly heavier
+ *   initial bundle is the right trade.
  */
 
-import { Suspense, lazy, useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { PlayerStage } from '../components/Live/PlayerStage';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
 import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
@@ -20,10 +24,6 @@ import { useSourceHealthSse } from '../hooks/useSourceHealthSse';
 import { useStreamingStore } from '../stores/streamingStore';
 import type { Channel } from '../lib/channels.config';
 import type { MetricsCollector } from '../live/MetricsCollector';
-
-const PlayerStage = lazy(() =>
-  import('../components/Live/PlayerStage').then(m => ({ default: m.PlayerStage })),
-);
 
 interface ChannelsResponse {
   channels: Channel[];
@@ -80,16 +80,14 @@ export default function App() {
           <div className="lg:col-span-2 space-y-4">
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
-                <Suspense fallback={<PlayerSkeleton />}>
-                  <PlayerStage
-                    key={currentChannel.id}
-                    streamUrl={currentChannel.streamUrl}
-                    streamName={currentChannel.name}
-                    channelId={currentChannel.id}
-                    backupStreamUrls={currentChannel.backupStreamUrls}
-                    collectorRef={collectorRef}
-                  />
-                </Suspense>
+                <PlayerStage
+                  key={currentChannel.id}
+                  streamUrl={currentChannel.streamUrl}
+                  streamName={currentChannel.name}
+                  channelId={currentChannel.id}
+                  backupStreamUrls={currentChannel.backupStreamUrls}
+                  collectorRef={collectorRef}
+                />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-500">
                   {loadError ? `Error: ${loadError}` : 'Loading…'}
@@ -148,12 +146,4 @@ function warmPreconnects(origins: readonly string[]): void {
     link.setAttribute('data-preconnect', origin);
     head.appendChild(link);
   }
-}
-
-function PlayerSkeleton(): JSX.Element {
-  return (
-    <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">
-      Loading player…
-    </div>
-  );
 }

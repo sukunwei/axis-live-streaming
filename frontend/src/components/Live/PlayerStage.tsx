@@ -56,51 +56,98 @@ function sendLog(payload: Record<string, unknown>): void {
 }
 
 /**
- * Try to start playback with audio on. Most browsers block unmuted autoplay
+ * Try to start playback with audio on. Browsers block unmuted autoplay
  * unless the user has previously interacted with the origin (Chrome MEI,
- * Safari whitelist) or we're on a privileged context (localhost). When
- * blocked, fall back to muted playback and register a one-shot listener on
- * the first user interaction (click / keydown / touchstart) to unmute.
+ * Safari whitelist) or we're on a privileged context (localhost).
+ *
+ * Heuristic to avoid the wasted unmuted-then-reject round-trip on cold
+ * visits (where it'll always fail):
+ *   - `navigator.userActivation.hasBeenActive === true` (Chrome/Edge):
+ *     user has interacted with the origin at some point this session —
+ *     unmuted-first is very likely to succeed.
+ *   - `window.location.hostname === 'localhost'`: privileged context.
+ *   - Otherwise: skip the unmuted attempt and start muted immediately;
+ *     the first-interaction listener will unmute as soon as the user
+ *     clicks anywhere on the page.
+ *
+ * Falls back to muted playback + first-interaction unlock if unmuted is
+ * rejected (handles Firefox / Safari which don't expose userActivation).
  */
 function playWithAudio(
   video: HTMLVideoElement,
   setMutedState: (muted: boolean) => void,
 ): void {
-  video.muted = false;
-  setMutedState(false);
-  const attempt = video.play();
-  if (attempt === undefined) {
-    // Some older WebKit returns undefined instead of a Promise.
-    return;
-  }
-  void attempt
-    .then(() => {
-      // Playback started with sound — nothing more to do.
-    })
-    .catch((err: Error) => {
+  const canTryUnmuted = canAutoplayUnmuted();
+  // Always register the unlock — even if unmuted-first works, the
+  // listener is harmless once it fires (it short-circuits on
+  // video.muted === false) and protects against later state changes
+  // (e.g. user muting via the control bar, then clicking).
+  const registerUnlock = (): void => {
+    const unlock = (): void => {
+      video.muted = false;
+      setMutedState(false);
+      document.removeEventListener('click', unlock, true);
+      document.removeEventListener('keydown', unlock, true);
+      document.removeEventListener('touchstart', unlock, true);
+    };
+    document.addEventListener('click', unlock, true);
+    document.addEventListener('keydown', unlock, true);
+    document.addEventListener('touchstart', unlock, true);
+  };
+
+  if (canTryUnmuted) {
+    video.muted = false;
+    setMutedState(false);
+    const attempt = video.play();
+    if (attempt === undefined) {
+      // Some older WebKit returns undefined instead of a Promise.
+      registerUnlock();
+      return;
+    }
+    void attempt.catch((err: Error) => {
       if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
         // eslint-disable-next-line no-console
         console.log('[hls] play error:', err.message);
         return;
       }
-      // No user gesture yet — start muted, then unlock on first interaction.
+      // Rejected — switch to muted and unlock on first interaction.
       video.muted = true;
       setMutedState(true);
       void video.play().catch((err2: Error) => {
         // eslint-disable-next-line no-console
         console.log('[hls] muted autoplay also blocked:', err2.message);
       });
-      const unlock = (): void => {
-        video.muted = false;
-        setMutedState(false);
-        document.removeEventListener('click', unlock, true);
-        document.removeEventListener('keydown', unlock, true);
-        document.removeEventListener('touchstart', unlock, true);
-      };
-      document.addEventListener('click', unlock, true);
-      document.addEventListener('keydown', unlock, true);
-      document.addEventListener('touchstart', unlock, true);
+      registerUnlock();
     });
+    return;
+  }
+
+  // Cold visit — start muted immediately, no wasted unmuted attempt.
+  video.muted = true;
+  setMutedState(true);
+  void video.play().catch((err: Error) => {
+    // eslint-disable-next-line no-console
+    console.log('[hls] muted autoplay blocked:', err.message);
+  });
+  registerUnlock();
+}
+
+function canAutoplayUnmuted(): boolean {
+  if (typeof window === 'undefined') return false;
+  // localhost is a privileged context in all browsers.
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return true;
+  }
+  // Chrome / Edge expose userActivation; true means the user has
+  // interacted with the origin at some point, so unmuted autoplay is
+  // very likely to succeed.
+  if (typeof navigator !== 'undefined') {
+    const ua = (navigator as Navigator & {
+      userActivation?: { hasBeenActive?: boolean };
+    }).userActivation;
+    if (ua?.hasBeenActive === true) return true;
+  }
+  return false;
 }
 
 interface PlayerStageProps {
