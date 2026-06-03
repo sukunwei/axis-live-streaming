@@ -47,8 +47,6 @@ export function recordPlayback(data: PlaybackSample): void {
   } catch {
     // never crash on logging failure
   }
-  // eslint-disable-next-line no-console
-  console.log(JSON.stringify({ ts: Date.now(), level: 'info', msg: 'playback sample', channelId: data.channelId, event: data.event ?? 'sample' }));
 }
 
 // ── /api/playback-summary support ─────────────────────────────────
