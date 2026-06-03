@@ -12,11 +12,7 @@
  *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
  *    lives in commit history if anyone wants to retry.
  *
- * Current config: 1 public news + 5 sports — was 6 channels with
- * apple-bipbop test, replaced it with Red Bull TV (1080p + Akamai + 6 variants)
- * for a stronger live sports demo. Added Red Bull TV ES (LATAM/Spanish via
- * AWS MediaTailor) for a 7th channel.
- *   - dw-english       public news  (real, DW public broadcast) — Akamai, 5 variants
+ * Current config: 6 sports-only channels (non-sports sources removed 2026-06-03).
  *   - red-bull-tv      extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
  *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor w/ ad insertion) — 5 variants, 1080p
  *   - acc-network      college sports (ACCDN) — Amagi, 5 variants
@@ -24,10 +20,12 @@
  *   - draftkings       sports betting / analysis — Zype, 4 video variants + iframe + subs
  *   - fubo-sports      general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
- * PRD "at least two sports" is satisfied by acc-network + nhl-hockey (or any
- * pair). All 5 sports channels live on different CDNs (Akamai / Amagi / Tubi-CF /
- * Zype / CloudFront + AWS MediaTailor for the ES variant), so a single CDN
- * outage can only kill at most 1 of the 4 backup cross-references per channel.
+ * PRD "at least two sports" is more than satisfied — 4 distinct sport categories:
+ * extreme (Red Bull), college (ACCDN), hockey (NHL), and general/betting
+ * (DraftKings + Fubo). All 6 channels live on different CDNs (Akamai / Amagi /
+ * Tubi-CF / Zype / CloudFront + AWS MediaTailor for the ES variant), so a
+ * single CDN outage can only kill at most 1 of the 2 backup cross-references
+ * per channel.
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -47,19 +45,6 @@ export interface Channel {
 }
 
 export const channels: readonly Channel[] = [
-  {
-    id: 'dw-english',
-    sport: 'Public News',
-    name: 'DW English',
-    type: 'hls',
-    primaryUrl: 'https://dwamdstream102.akamaized.net/hls/live/2015525/dwstream102/index.m3u8',
-    masterPath: 'index.m3u8',
-    live: true,
-    variants: 5,
-    backupUrls: [
-      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
-    ],
-  },
   {
     id: 'red-bull-tv',
     sport: 'Extreme Sports',
