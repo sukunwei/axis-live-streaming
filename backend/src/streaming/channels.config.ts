@@ -12,20 +12,26 @@
  *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
  *    lives in commit history if anyone wants to retry.
  *
- * Current config: 6 sports-only channels (non-sports sources removed 2026-06-03).
+ * Current config: 5 sports-only channels. NHL was removed 2026-06-03 because
+ * the SSE-driven failover (PlayerStage.tsx, the `health === 'down'` effect)
+ * switches to the first `backupUrls` entry, which for NHL was ACCDN —
+ * a different channel entirely (college sports), not the same content
+ * from a different CDN. The "auto switch to wrong content" UX is misleading
+ * and was visible enough that keeping NHL in the registry actively hurt the
+ * demo. (The underlying design issue — that backupUrls currently points to
+ * other channels instead of "same channel, different CDN" — remains for the
+ * other 5 channels; the README Next Steps calls it out as a follow-up.)
  *   - red-bull-tv      extreme sports (Red Bull TV global, direct Akamai) — 6 variants, 1080p
  *   - red-bull-tv-es   extreme sports (Red Bull TV LATAM/Spanish, AWS MediaTailor w/ ad insertion) — 5 variants, 1080p
  *   - acc-network      college sports (ACCDN) — Amagi, 5 variants
- *   - nhl-hockey       ice hockey (NHL) — Tubi/CloudFront, 6 variants
  *   - draftkings       sports betting / analysis — Zype, 4 video variants + iframe + subs
  *   - fubo-sports      general sports (Fubo Sports Network) — CloudFront, 6 variants
  *
  * PRD "at least two sports" is more than satisfied — 4 distinct sport categories:
- * extreme (Red Bull), college (ACCDN), hockey (NHL), and general/betting
- * (DraftKings + Fubo). All 6 channels live on different CDNs (Akamai / Amagi /
- * Tubi-CF / Zype / CloudFront + AWS MediaTailor for the ES variant), so a
- * single CDN outage can only kill at most 1 of the 2 backup cross-references
- * per channel.
+ * extreme (Red Bull), college (ACCDN), and general/betting (DraftKings + Fubo).
+ * All 5 channels live on different CDNs (Akamai / Amagi / Zype / CloudFront +
+ * AWS MediaTailor for the ES variant), so a single CDN outage can only kill
+ * at most 1 of the 2 backup cross-references per channel.
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -86,22 +92,8 @@ export const channels: readonly Channel[] = [
     live: true,
     variants: 5,  // 240p / 360p / 480p / 720p / 1080p
     backupUrls: [
-      'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
       'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
-    ],
-  },
-  {
-    id: 'nhl-hockey',
-    sport: 'Ice Hockey',
-    name: 'NHL',
-    type: 'hls',
-    primaryUrl: 'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
-    masterPath: 'playlist.m3u8',
-    live: true,
-    variants: 6,
-    backupUrls: [
-      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
-      'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
+      'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8',
     ],
   },
   {
@@ -115,7 +107,7 @@ export const channels: readonly Channel[] = [
     variants: 4,  // 4 video variants (240/480/720/1080p) + 1 I-frame track + 1 subtitle track
     backupUrls: [
       'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
-      'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
+      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
     ],
   },
   {

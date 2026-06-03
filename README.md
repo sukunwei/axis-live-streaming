@@ -86,20 +86,30 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 
 > 当前注册表见 [`backend/src/streaming/channels.config.ts`](backend/src/streaming/channels.config.ts)。下表是各频道**实际接入**的源；上游失效时可通过修改注册表切换，proxy 层无需改动。
 >
-> 所有频道都是体育内容。`dw-english`（DW 英语新闻）已于 2026-06-03 移除。
+> 所有频道都是体育内容。`dw-english`（DW 英语新闻）2026-06-03 移除；`nhl-hockey`（NHL）2026-06-03 也移除——理由见下面"⚠ 已知问题"。
 
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
 | `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV 全球版（直 Akamai），6 档到 **1080p** |
 | `red-bull-tv-es` | Extreme Sports (ES) | `886bd3fbc782459f8de7555d32d7e9ce.mediatailor.us-west-2.amazonaws.com/v1/master/.../LINEAR-957-WORBLATAMESFAST-WHALETVPLUS/.../playlist.m3u8` | Red Bull TV LATAM/Spanish 版（AWS MediaTailor 做广告插入），5 档到 1080p，seg 实际从 `freqsyndlin.redbull.com` 出，Spanish CC 轨道 |
 | `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network（ACC 大学体育），5 个变体，Amagi 平台 |
-| `nhl-hockey` | Ice Hockey | `aegis-cloudfront-1.tubi.video/.../1f4cbb33.../playlist.m3u8` | NHL（冰球），6 个变体，Tubi / CloudFront CDN |
 | `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network，4 视频档 + I-frame + 字幕，Zype CDN |
 | `fubo-sports` | General Sports | `dnf08l6u6uxnz.cloudfront.net/master.m3u8` | Fubo Sports Network，6 个变体，CloudFront CDN |
 
-PRD "至少两种运动"远超满足 —— 4 个明确不同的体育类别：extreme (Red Bull)、college (ACCDN)、hockey (NHL)、general/betting (DraftKings + Fubo)。`draftkings` 内容是体育博彩/分析/赛事直播，**归为体育类**（与 ESPN Bet、Fox Bet 同类）。
+PRD "至少两种运动"远超满足 —— 3 个明确不同的体育类别：extreme (Red Bull)、college (ACCDN)、general/betting (DraftKings + Fubo)。`draftkings` 内容是体育博彩/分析/赛事直播，**归为体育类**（与 ESPN Bet、Fox Bet 同类）。
 
-**Failover cross-references**：每个 sports 频道列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。
+**Failover cross-references**：每个 sports 频道列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。**（⚠ 已知问题，详见下文）**
+
+### ⚠ 已知问题：SSE-driven failover 切到"错内容"
+
+`PlayerStage.tsx` 的 `health === 'down'` 监听会在原频道 2s down 时自动 `hls.loadSource(backupStreamUrls[0])`。当前 `backupUrls` 字段存的是**其它频道的 URL**（不是"同内容不同 CDN"），所以 NHL down → 显示 ACCDN 大学体育（用户点 NHL 看到大学橄榄球），是错内容 UX。
+
+**临时修法**：把 NHL 从注册表里删了（NHL 移除前的 backup #1 是 ACCDN，错得最明显；其它 4 个 backup 至少"都是体育"，不如 NHL-ACCDN 跨类那样刺眼）。
+
+**彻底修法**（已列入 `Next Steps`，未实现）：
+- `backupUrls` 字段语义改：存"同频道从不同 CDN 拿的同一条 master URL"，而非"另一个频道的 URL"
+- 若没有同内容多 CDN 源，就别让 SSE failover 走这条路——只显示错误状态让用户手动切
+- 或者：SSE-driven failover 走 `/mock/recover` 等待上游恢复
 
 > **关于源稳定性**：所有 URL 在 2026-06-03 已 curl 端到端验证（master 200 → variant 200 → segment 200）。**扫了 30+ 候选源**，绝大多数（Abu Dhabi / Dubai / Pluto stitcher / beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport / FITE-247 / ATV2 / Pluto M3U lists / 等）都因为 404 / TLS 拒握 / DNS 解析不了 / 协议不对（Pluto Stitcher）/ Cloudflare 风控（nocords）失败，详细 discard 列表在 commit history 里。公共源随时可能失效，部署前可跑 `scripts/test-sources.sh` 复测。
 
