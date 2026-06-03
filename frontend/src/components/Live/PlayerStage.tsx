@@ -21,7 +21,7 @@ import { makeHlsConfig } from '../../live/hlsConfig';
 import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
 import { MetricsCollector } from '../../live/MetricsCollector';
 import { useStreamingStore } from '../../stores/streamingStore';
-import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
+import { Volume2, VolumeX, Maximize2, Minimize2, Play, Pause } from 'lucide-react';
 
 function isBufferFullDetail(details: string | undefined): boolean {
   if (!details) return false;
@@ -403,7 +403,7 @@ export function PlayerStage({
       });
     }, 5_000);
 
-    // Keyboard shortcut: M toggles mute, F toggles fullscreen
+    // Keyboard shortcut: M toggles mute, F toggles fullscreen, K/space toggles play-pause
     const onKey = (e: KeyboardEvent): void => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === 'm' || e.key === 'M') {
@@ -413,6 +413,12 @@ export function PlayerStage({
         setIsMuted(v.muted);
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
+      } else if (e.key === 'k' || e.key === 'K' || e.key === ' ') {
+        e.preventDefault();
+        const v = videoRef.current;
+        if (!v) return;
+        if (v.paused) void v.play();
+        else v.pause();
       }
     };
     document.addEventListener('keydown', onKey);
@@ -499,6 +505,21 @@ export function PlayerStage({
             <span className="bg-black/60 px-2 py-0.5 rounded text-xs">{currentQuality}</span>
           )}
           <div className="flex-1" />
+          <button
+            onClick={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              if (v.paused) void v.play();
+              else v.pause();
+            }}
+            className="pointer-events-auto text-white hover:text-zinc-300 transition-colors p-1.5 rounded hover:bg-white/10"
+            title={isPlaying ? 'Pause (K)' : 'Play (K)'}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying
+              ? <Pause className="w-5 h-5" />
+              : <Play className="w-5 h-5" />}
+          </button>
           <button
             onClick={() => {
               const v = videoRef.current;
