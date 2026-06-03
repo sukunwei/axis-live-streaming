@@ -80,8 +80,27 @@ const KNOWN_TEST_CHANNELS = new Set(['test', 'smoke-test', 'proxy-test']);
  *   - min buffer (0-1)   ≥8s → 1, ≥5s → 0.5, <5s → 0
  *
  * Effective range: 0 (broken) to 5 (perfect). 3 = "watchable with minor issues".
+ *
+ * ⚠ `decodedFrames` sanity check: a sample with `decodedFrames=0` means the
+ * video never actually played a frame on the client. Without this check, a
+ * hung source (segments 404, geofenced, etc.) sends all-zero samples for
+ * minutes and gets scored as "perfect" (stalls=0, dropped=0, buf=0 → 4/5).
+ * We force a low score when decodedFrames is 0 across the whole window.
  */
-export function scoreObserved(stalls: number, dropped: number, minBuffer: number, spanSec: number): number {
+export function scoreObserved(
+  stalls: number,
+  dropped: number,
+  minBuffer: number,
+  spanSec: number,
+  decodedFrames = Number.POSITIVE_INFINITY,  // legacy callers may not pass this
+): number {
+  // No-data guard: client mounted but video never decoded a frame.
+  // Caller must opt in by passing decodedFrames explicitly (default = assume
+  // it played, to keep the legacy 4-arg call site working).
+  if (decodedFrames === 0 && spanSec >= 30) {
+    return 0;
+  }
+
   const span = Math.max(spanSec, 30);  // floor at 30s so a 5s test isn't unfair
   const spanMin = span / 60;
   const stallsPerMin = stalls / spanMin;
@@ -99,8 +118,18 @@ export function scoreObserved(stalls: number, dropped: number, minBuffer: number
   return Math.max(0, Math.min(5, stallPart + dropPart + bufPart));
 }
 
-export function buildReasons(stalls: number, dropped: number, minBuffer: number, spanSec: number): string[] {
+export function buildReasons(
+  stalls: number,
+  dropped: number,
+  minBuffer: number,
+  spanSec: number,
+  decodedFrames = Number.POSITIVE_INFINITY,
+): string[] {
   const reasons: string[] = [];
+  // No-data guard reason first (most informative).
+  if (decodedFrames === 0 && spanSec >= 30) {
+    reasons.push('no playback observed — video never decoded a frame (hung/geofenced/CORS?)');
+  }
   const span = Math.max(spanSec, 30);
   const spanMin = span / 60;
   const stallsPerMin = stalls / spanMin;
@@ -124,7 +153,12 @@ export function getPlaybackSummary(): Record<string, ChannelSummary> {
   const logFile = todayFile();
   if (!existsSync(logFile)) return {};
 
-  const byChannel = new Map<string, { samples: number; span: number; maxStalls: number; maxStallMs: number; maxDropped: number; minBuffer: number; firstTs: number; lastTs: number }>();
+  const byChannel = new Map<string, {
+    samples: number; span: number;
+    maxStalls: number; maxStallMs: number; maxDropped: number;
+    minBuffer: number; maxDecoded: number;
+    firstTs: number; lastTs: number;
+  }>();
 
   try {
     const content = readFileSync(logFile, 'utf8');
@@ -135,7 +169,9 @@ export function getPlaybackSummary(): Record<string, ChannelSummary> {
         const ch = d.channelId as string;
         if (!ch || KNOWN_TEST_CHANNELS.has(ch) || (d.event && d.event !== 'sample')) continue;
         const cur = byChannel.get(ch) ?? {
-          samples: 0, span: 0, maxStalls: 0, maxStallMs: 0, maxDropped: 0, minBuffer: 999,
+          samples: 0, span: 0,
+          maxStalls: 0, maxStallMs: 0, maxDropped: 0,
+          minBuffer: 999, maxDecoded: 0,
           firstTs: Number.POSITIVE_INFINITY, lastTs: 0,
         };
         cur.samples++;
@@ -145,6 +181,9 @@ export function getPlaybackSummary(): Record<string, ChannelSummary> {
         cur.maxStalls = Math.max(cur.maxStalls, (d.stalls as number) || 0);
         cur.maxStallMs = Math.max(cur.maxStallMs, (d.totalStallMs as number) || 0);
         cur.maxDropped = Math.max(cur.maxDropped, (d.droppedFrames as number) || 0);
+        // decodedFrames is cumulative across samples (hls.js returns
+        // totalVideoFrames), so MAX over samples ≈ final count.
+        cur.maxDecoded = Math.max(cur.maxDecoded, (d.decodedFrames as number) || 0);
         const buf = (d.avgBufferSec as number) || 0;
         if (buf > 0 && buf < cur.minBuffer) cur.minBuffer = buf;
         byChannel.set(ch, cur);
@@ -162,8 +201,8 @@ export function getPlaybackSummary(): Record<string, ChannelSummary> {
       totalStalls: c.maxStalls,
       totalStallMs: c.maxStallMs,
       totalDropped: c.maxDropped,
-      observedScore: scoreObserved(c.maxStalls, c.maxDropped, minBuffer, span),
-      reasons: buildReasons(c.maxStalls, c.maxDropped, minBuffer, span),
+      observedScore: scoreObserved(c.maxStalls, c.maxDropped, minBuffer, span, c.maxDecoded),
+      reasons: buildReasons(c.maxStalls, c.maxDropped, minBuffer, span, c.maxDecoded),
       hasData: true,
     };
   }
