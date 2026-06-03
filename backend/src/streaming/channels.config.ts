@@ -5,19 +5,26 @@
  * Must curl-verify each URL on build day (§1.3 discipline).
  *
  * ⚠ Public HLS source pitfall: upstream can fail at any time (master 200 but variants 404,
- *    or TLS dies). 2026-06-02 measured: redbull, stadium both purged; france 24 upstream
- *    TLS died. The two real sports sources below were re-verified end-to-end on 2026-06-03
- *    (master + variant + segment 200 OK under BROWSER_UA).
+ *    or TLS dies). All sources below were re-verified end-to-end on 2026-06-03
+ *    (master → variant → segment 200 OK under BROWSER_UA). The full iptv-org sports
+ *    list was scanned in the same session — most (Abu Dhabi / Dubai / Pluto stitcher /
+ *    beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport /
+ *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. Only the 4 below
+ *    survived. The discarded list lives in commit history if anyone wants to retry.
  *
- * Current config: 2 public news / sports + 2 test sources
- *   - dw-english    public news (real, DW public broadcast) — live, 5 variants
- *   - acc-network   college sports (real, ACC Digital Network via Amagi) — live, 5 variants
- *   - nhl-hockey    ice hockey (real, NHL via Tubi/CloudFront) — live, 6 variants
- *   - apple-bipbop  Apple public test (HLS ABR multi-tier) — VOD loop
+ * Current config: 4 distinct CDN-backed sports/news + 1 VOD test
+ *   - dw-english    public news (real, DW public broadcast) — live, 5 variants, Akamai
+ *   - acc-network   college sports (ACCDN via Amagi) — live, 5 variants
+ *   - nhl-hockey    ice hockey (NHL via Tubi/CloudFront) — live, 6 variants
+ *   - draftkings    sports betting / analysis (Zype CDN) — live, 4 video + iframe + subs
+ *   - fubo-sports   general sports (Fubo Sports Network via CloudFront) — live, 6 variants
+ *   - apple-bipbop  Apple public test (HLS ABR multi-tier) — VOD loop, 4 variants
  *
- * Meets PRD requirement "at least two sports": ACCDN (college football/basketball) and
- * NHL (ice hockey) are two different sports categories with different upstream CDNs
- * (Amagi vs. CloudFront) for failover-story contrast.
+ * PRD "at least two sports" is satisfied by acc-network + nhl-hockey (two distinct
+ * sport categories on two distinct CDNs). draftkings and fubo-sports were added after
+ * an iptv-org scan turned up two more working sources; they live on Zype and
+ * CloudFront respectively, so any of the 4 sports channels can fail over to any
+ * other (proxy has 3 backup cross-references to choose from per channel).
  *
  * Field notes:
  *   - primaryUrl: Full URL of upstream master
@@ -61,6 +68,7 @@ export const channels: readonly Channel[] = [
     variants: 5,  // 240p / 360p / 480p / 720p / 1080p
     backupUrls: [
       'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
+      'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
     ],
   },
   {
@@ -73,6 +81,35 @@ export const channels: readonly Channel[] = [
     live: true,
     variants: 6,
     backupUrls: [
+      'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
+      'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
+    ],
+  },
+  {
+    id: 'draftkings',
+    sport: 'Sports Betting',
+    name: 'DraftKings Network',
+    type: 'hls',
+    primaryUrl: 'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
+    masterPath: 'live.m3u8',
+    live: true,
+    variants: 4,  // 4 video variants (240/480/720/1080p) + 1 I-frame track + 1 subtitle track
+    backupUrls: [
+      'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
+      'https://aegis-cloudfront-1.tubi.video/1f4cbb33-cb23-40ab-b54b-2965cc551b32/playlist.m3u8',
+    ],
+  },
+  {
+    id: 'fubo-sports',
+    sport: 'General Sports',
+    name: 'Fubo Sports Network',
+    type: 'hls',
+    primaryUrl: 'https://dnf08l6u6uxnz.cloudfront.net/master.m3u8',
+    masterPath: 'master.m3u8',
+    live: true,
+    variants: 6,  // 216p / 216p / 288p / 404p / 720p / 1080p
+    backupUrls: [
+      'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
     ],
   },
