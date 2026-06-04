@@ -23,12 +23,17 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { RequestOptions } from 'http';
 import { getChannel } from './registry.js';
 import { isBroken } from './mockFailure.js';
+import { LruCache } from './manifestCache.js';
+import { sendGzipped } from '../http/gzip.js';
 
 const SEGMENT_TTL_SEC = 30;
 const MANIFEST_CACHE_TTL_MS = 2_000;
 const MANIFEST_CACHE_CONTROL = 'public, max-age=2';
 const UPSTREAM_TIMEOUT_MS = 10_000;
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;  // 7 days
+/** Upper bound on cached manifest entries. Maps preserve insertion order
+ *  in V8, so we use that to evict the oldest entry when over capacity. */
+const MANIFEST_CACHE_MAX_ENTRIES = 100;
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -36,7 +41,9 @@ const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, maxFreeSocke
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 });
 
 const inflightManifest = new Map<string, Promise<FetchedText>>();
-const upstreamManifestCache = new Map<string, { fetched: FetchedText; expiresAt: number }>();
+const upstreamManifestCache = new LruCache<string, { fetched: FetchedText; expiresAt: number }>(
+  MANIFEST_CACHE_MAX_ENTRIES,
+);
 
 function upstreamGetOptions(parsed: URL): RequestOptions {
   return {
@@ -46,7 +53,7 @@ function upstreamGetOptions(parsed: URL): RequestOptions {
 }
 
 export async function handleHlsProxy(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   url: URL,
 ): Promise<void> {
@@ -83,14 +90,17 @@ export async function handleHlsProxy(
       if (upstreamUrl.endsWith('.m3u8')) {
         const { text } = await fetchTextCached(upstreamUrl);
         const rewritten = rewriteManifest(text, channelId, ch.primaryUrl, upstreamUrl, false);
-        res.writeHead(200, {
-          'Content-Type': 'application/vnd.apple.mpegurl',
-          'Cache-Control': MANIFEST_CACHE_CONTROL,
-          'Access-Control-Allow-Origin': '*',
+        sendGzipped(req, res, {
+          status: 200,
+          contentType: 'application/vnd.apple.mpegurl',
+          body: rewritten,
+          extra: {
+            'Cache-Control': MANIFEST_CACHE_CONTROL,
+            'Access-Control-Allow-Origin': '*',
+          },
         });
-        res.end(rewritten);
       } else {
-        await proxySegment(res, upstreamUrl);
+        await proxySegment(req, res, upstreamUrl);
       }
       return;
     }
@@ -107,10 +117,10 @@ export async function handleHlsProxy(
 
     if (relPath.endsWith('.m3u8')) {
       const isMaster = upstream.pathname === new URL(ch.primaryUrl).pathname;
-      await proxyManifest(res, upstreamUrl, ch.primaryUrl, channelId, isMaster, isLive);
+      await proxyManifest(req, res, upstreamUrl, ch.primaryUrl, channelId, isMaster, isLive);
       return;
     }
-    await proxySegment(res, upstreamUrl);
+    await proxySegment(req, res, upstreamUrl);
   } catch (err) {
     if (res.writableEnded) return;  // response already ended by prior code
     console.error('[proxy] error', {
@@ -129,6 +139,7 @@ export async function handleHlsProxy(
 
 // -- manifest: Fetch upstream → rewrite segment URLs → return ----------------------
 async function proxyManifest(
+  req: IncomingMessage,
   res: ServerResponse,
   upstreamUrl: string,
   primaryUrl: string,
@@ -159,12 +170,15 @@ async function proxyManifest(
   }
 
   const rewritten = rewriteManifest(text, channelId, primaryUrl, upstreamUrl, isMaster);
-  res.writeHead(200, {
-    'Content-Type': 'application/vnd.apple.mpegurl',
-    'Cache-Control': MANIFEST_CACHE_CONTROL,
-    'Access-Control-Allow-Origin': '*',
+  sendGzipped(req, res, {
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl',
+    body: rewritten,
+    extra: {
+      'Cache-Control': MANIFEST_CACHE_CONTROL,
+      'Access-Control-Allow-Origin': '*',
+    },
   });
-  res.end(rewritten);
 }
 
 function rewriteManifest(
@@ -203,11 +217,62 @@ function rewriteLine(
   return toProxyPath(t, baseUrl, primaryUrl, channelId);
 }
 
+/** HEAD the first variant; 200/206 = reachable, anything else = unreach.
+ *  Try HEAD first (cheap), fall back to a Range GET if the CDN rejects HEAD
+ *  (MediaTailor returns 405/404 for HEAD — same goes for some Akamai WAF
+ *  configs). The GET stops reading the body as soon as status lands.
+ */
+function headOk(upstreamUri: string, baseUrl: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const abs = new URL(upstreamUri, baseUrl);
+    const mod = abs.protocol === 'https:' ? https : http;
+    const timer = setTimeout(() => resolve(false), 5_000);
+    const opts = upstreamGetOptions(abs);
+    const tryHead = (): void => {
+      const req = mod.request(abs, { ...opts, method: 'HEAD' }, res => {
+        clearTimeout(timer);
+        res.resume();
+        const code = res.statusCode ?? 0;
+        if (code >= 200 && code < 400) {
+          resolve(true);
+        } else if (code === 405 || code === 404 || code === 501) {
+          // CDN doesn't allow HEAD; retry as a tiny Range GET.
+          clearTimeout(timer);
+          tryGet();
+        } else {
+          resolve(false);
+        }
+      });
+      req.on('error', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      req.end();
+    };
+    const tryGet = (): void => {
+      const t2 = setTimeout(() => resolve(false), 5_000);
+      const req = mod.request(abs, { ...opts, method: 'GET', headers: { ...opts.headers, Range: 'bytes=0-0' } }, res => {
+        clearTimeout(t2);
+        res.resume();  // discard body
+        const code = res.statusCode ?? 0;
+        resolve(code >= 200 && code < 400);
+      });
+      req.on('error', () => {
+        clearTimeout(t2);
+        resolve(false);
+      });
+      req.end();
+    };
+    tryHead();
+  });
+}
+
 /**
  * Convert upstream URL to same-origin proxy path.
  *
  * Same domain: use relative path (cleaner for human inspection)
- * Cross-domain: encode full URL into ?u=<base64> so proxy can fetch (France 24-type sources)
+ * Cross-domain: encode full URL into ?u=<base64> so proxy can fetch
+ * (France 24-type sources)
  */
 function toProxyPath(
   upstreamUri: string,
@@ -254,7 +319,7 @@ function decodeProxyUrl(u: string | null): string | null {
 }
 
 // -- segment: stream pipe upstream segments to client ----------------------
-function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
+function proxySegment(req: IncomingMessage, res: ServerResponse, upstreamUrl: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void): void => {
@@ -279,23 +344,45 @@ function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
       }
       const parsed = new URL(url);
       const mod = parsed.protocol === 'https:' ? https : http;
-      const req = mod.get(parsed, upstreamGetOptions(parsed), msg => {
+      const upstreamReq = mod.get(parsed, upstreamGetOptions(parsed), msg => {
         // follow 3xx
         if (msg.statusCode && msg.statusCode >= 300 && msg.statusCode < 400 && msg.headers.location) {
           msg.resume();
-          req.destroy();  // close the old request socket
+          upstreamReq.destroy();  // close the old request socket
           const next = new URL(msg.headers.location, url).toString();
           follow(next, redirectCount + 1);
           return;
         }
         if (settled || res.headersSent) return;  // prevent ERR_HTTP_HEADERS_SENT
         const status = msg.statusCode ?? 502;
-        try {
-          res.writeHead(status, {
-            'Content-Type': msg.headers['content-type'] ?? 'video/mp2t',
-            'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}`,
+
+        // Conditional GET: if client sent If-Modified-Since and upstream's
+        // Last-Modified is unchanged, return 304 with no body. Saves the
+        // full segment bytes on revalidation (browser cache, multi-tab).
+        const upstreamLm = msg.headers['last-modified'];
+        const clientIms = req.headers['if-modified-since'];
+        if (status === 200 && upstreamLm && clientIms && upstreamLm === clientIms) {
+          res.writeHead(304, {
+            'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}, immutable`,
             'Access-Control-Allow-Origin': '*',
+            'Last-Modified': upstreamLm,
           });
+          msg.resume();
+          return settle(resolve);
+        }
+
+        // Build response headers. `immutable` lets the browser skip
+        // revalidation within max-age (live segments don't change once
+        // published).
+        const headers: Record<string, string | number> = {
+          'Content-Type': msg.headers['content-type'] ?? 'video/mp2t',
+          'Cache-Control': `public, max-age=${SEGMENT_TTL_SEC}, immutable`,
+          'Access-Control-Allow-Origin': '*',
+        };
+        if (upstreamLm) headers['Last-Modified'] = upstreamLm;
+
+        try {
+          res.writeHead(status, headers);
         } catch {
           settle(() => reject(new Error('writeHead failed')));
           return;
@@ -304,7 +391,7 @@ function proxySegment(res: ServerResponse, upstreamUrl: string): Promise<void> {
         msg.on('end', () => settle(resolve));
         msg.on('error', err => settle(() => reject(err)));
       });
-      req.on('error', err => settle(() => reject(err)));
+      upstreamReq.on('error', err => settle(() => reject(err)));
     };
     follow(upstreamUrl);
   });
@@ -330,7 +417,7 @@ function fetchTextShared(key: string, fetchFn: () => Promise<FetchedText>): Prom
 /** 2s in-process cache + collapsing — multi-tab / prefetch share one upstream hit. */
 async function fetchTextCached(upstreamUrl: string): Promise<FetchedText> {
   const now = Date.now();
-  const hit = upstreamManifestCache.get(upstreamUrl);
+  const hit = upstreamManifestCache.get(upstreamUrl);  // bumps LRU
   if (hit && hit.expiresAt > now) return hit.fetched;
   const fetched = await fetchTextShared(`manifest:${upstreamUrl}`, () => fetchText(upstreamUrl));
   upstreamManifestCache.set(upstreamUrl, { fetched, expiresAt: now + MANIFEST_CACHE_TTL_MS });
@@ -378,21 +465,4 @@ function parseFirstVariant(manifest: string): string | null {
     return t;
   }
   return null;
-}
-
-/** HEAD the first variant; 200/206 is treated as OK */
-function headOk(upstreamUri: string, baseUrl: string): Promise<boolean> {
-  return new Promise(resolve => {
-    const abs = new URL(upstreamUri, baseUrl);
-    const mod = abs.protocol === 'https:' ? https : http;
-    const timer = setTimeout(() => resolve(false), 5_000);
-    const req = mod.request(abs, { ...upstreamGetOptions(abs), method: 'HEAD' }, res => {
-      clearTimeout(timer);
-      res.resume();
-      const code = res.statusCode ?? 0;
-      resolve(code >= 200 && code < 400);
-    });
-    req.on('error', () => { clearTimeout(timer); resolve(false); });
-    req.end();
-  });
 }

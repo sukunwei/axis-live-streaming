@@ -15,14 +15,13 @@
  *   - on backup switch: only swap loadSource, keep video element (preserves frame)
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import Hls from 'hls.js';
-import { hlsConfig } from '../../live/hlsConfig';
+import { makeHlsConfig } from '../../live/hlsConfig';
 import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
 import { MetricsCollector } from '../../live/MetricsCollector';
 import { useStreamingStore } from '../../stores/streamingStore';
-import { QualityHUD } from './QualityHUD';
-import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
+import { Volume2, VolumeX, Maximize2, Minimize2, Play, Pause } from 'lucide-react';
 
 function isBufferFullDetail(details: string | undefined): boolean {
   if (!details) return false;
@@ -41,6 +40,116 @@ function trimHlsBackBuffer(hls: Hls): void {
   }
 }
 
+/**
+ * Best-effort playback log via sendBeacon. Doesn't compete with HLS segment
+ * fetches for the HTTP/1.1 socket pool and survives page unloads (the page
+ * hide / unmount event below).
+ */
+function sendLog(payload: Record<string, unknown>): void {
+  if (typeof navigator === 'undefined' || typeof navigator.sendBeacon !== 'function') return;
+  try {
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    navigator.sendBeacon('/api/log-playback', blob);
+  } catch {
+    // Queue full or serialization failed — drop the log.
+  }
+}
+
+/**
+ * Try to start playback with audio on. Browsers block unmuted autoplay
+ * unless the user has previously interacted with the origin (Chrome MEI,
+ * Safari whitelist) or we're on a privileged context (localhost).
+ *
+ * Heuristic to avoid the wasted unmuted-then-reject round-trip on cold
+ * visits (where it'll always fail):
+ *   - `navigator.userActivation.hasBeenActive === true` (Chrome/Edge):
+ *     user has interacted with the origin at some point this session —
+ *     unmuted-first is very likely to succeed.
+ *   - `window.location.hostname === 'localhost'`: privileged context.
+ *   - Otherwise: skip the unmuted attempt and start muted immediately;
+ *     the first-interaction listener will unmute as soon as the user
+ *     clicks anywhere on the page.
+ *
+ * Falls back to muted playback + first-interaction unlock if unmuted is
+ * rejected (handles Firefox / Safari which don't expose userActivation).
+ */
+function playWithAudio(
+  video: HTMLVideoElement,
+  setMutedState: (muted: boolean) => void,
+): void {
+  const canTryUnmuted = canAutoplayUnmuted();
+  // Always register the unlock — even if unmuted-first works, the
+  // listener is harmless once it fires (it short-circuits on
+  // video.muted === false) and protects against later state changes
+  // (e.g. user muting via the control bar, then clicking).
+  const registerUnlock = (): void => {
+    const unlock = (): void => {
+      video.muted = false;
+      setMutedState(false);
+      document.removeEventListener('click', unlock, true);
+      document.removeEventListener('keydown', unlock, true);
+      document.removeEventListener('touchstart', unlock, true);
+    };
+    document.addEventListener('click', unlock, true);
+    document.addEventListener('keydown', unlock, true);
+    document.addEventListener('touchstart', unlock, true);
+  };
+
+  if (canTryUnmuted) {
+    video.muted = false;
+    setMutedState(false);
+    const attempt = video.play();
+    if (attempt === undefined) {
+      // Some older WebKit returns undefined instead of a Promise.
+      registerUnlock();
+      return;
+    }
+    void attempt.catch((err: Error) => {
+      if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
+        // eslint-disable-next-line no-console
+        console.log('[hls] play error:', err.message);
+        return;
+      }
+      // Rejected — switch to muted and unlock on first interaction.
+      video.muted = true;
+      setMutedState(true);
+      void video.play().catch((err2: Error) => {
+        // eslint-disable-next-line no-console
+        console.log('[hls] muted autoplay also blocked:', err2.message);
+      });
+      registerUnlock();
+    });
+    return;
+  }
+
+  // Cold visit — start muted immediately, no wasted unmuted attempt.
+  video.muted = true;
+  setMutedState(true);
+  void video.play().catch((err: Error) => {
+    // eslint-disable-next-line no-console
+    console.log('[hls] muted autoplay blocked:', err.message);
+  });
+  registerUnlock();
+}
+
+function canAutoplayUnmuted(): boolean {
+  if (typeof window === 'undefined') return false;
+  // localhost is a privileged context in all browsers.
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return true;
+  }
+  // Chrome / Edge expose userActivation; true means the user has
+  // interacted with the origin at some point, so unmuted autoplay is
+  // very likely to succeed.
+  if (typeof navigator !== 'undefined') {
+    const ua = (navigator as Navigator & {
+      userActivation?: { hasBeenActive?: boolean };
+    }).userActivation;
+    if (ua?.hasBeenActive === true) return true;
+  }
+  return false;
+}
+
 interface PlayerStageProps {
   /** Proxied m3u8 URL (frontend never connects to upstream directly) */
   streamUrl: string;
@@ -48,6 +157,12 @@ interface PlayerStageProps {
   channelId?: string;
   /** Backup sources (upstream direct URL) */
   backupStreamUrls?: readonly string[];
+  /**
+   * Optional externally-owned MetricsCollector ref. When provided, PlayerStage
+   * populates this ref instead of creating its own — lets a parent (App) share
+   * the same instance with a QualityHUD rendered as a sibling below the video.
+   */
+  collectorRef?: MutableRefObject<MetricsCollector | null>;
   onPlaying?: () => void;
   onError?: (kind: 'network' | 'media' | 'other', detail: string) => void;
 }
@@ -57,12 +172,14 @@ export function PlayerStage({
   streamName,
   channelId,
   backupStreamUrls = [],
+  collectorRef: externalCollectorRef,
   onError,
 }: PlayerStageProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const gateRef = useRef(new RecoveryGate());
-  const collectorRef = useRef(new MetricsCollector());
+  const internalCollectorRef = useRef<MetricsCollector | null>(null);
+  const collectorRef = externalCollectorRef ?? internalCollectorRef;
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentQuality, setCurrentQuality] = useState<string>('auto');
@@ -70,7 +187,14 @@ export function PlayerStage({
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const playerContainerRef = useRef<HTMLDivElement>(null);
+
+  // A VOD stream has a finite, >0 duration. A live stream reports Infinity
+  // (hls.js) or 0 (until metadata loads). The slider is only seekable in
+  // the VOD case; for live we render a static bar.
+  const isSeekable = Number.isFinite(duration) && duration > 0;
 
   const toggleFullscreen = (): void => {
     const el = playerContainerRef.current;
@@ -98,7 +222,7 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.warn(`[player] sse-driven failover → backup[${nextIdx}] (channel ${channelId})`);
       hlsRef.current.destroy();
-      const next = new Hls(hlsConfig);
+      const next = new Hls(makeHlsConfig());
       hlsRef.current = next;
       next.loadSource(target);
       if (videoRef.current) next.attachMedia(videoRef.current);
@@ -120,6 +244,13 @@ export function PlayerStage({
       hlsRef.current = null;
     }
 
+    // Reset/own the collector for this mount. If the parent provided an
+    // external ref (so a sibling QualityHUD can read it), assign a fresh
+    // instance; otherwise fall back to the internal ref. A reset on a
+    // fresh collector clears any prior sampling.
+    const collector: MetricsCollector = new MetricsCollector();
+    collectorRef.current = collector;
+
     // Start MetricsCollector
     // (attach after hls is created below)
 
@@ -128,7 +259,7 @@ export function PlayerStage({
         video.src = streamUrl;
         const onLoaded = (): void => {
           setIsLoading(false);
-          void video.play().catch(() => setIsPlaying(false));
+          playWithAudio(video, setIsMuted);
         };
         const onError = (): void => {
           setErrorMsg('Safari HLS load failed');
@@ -146,7 +277,7 @@ export function PlayerStage({
       return;
     }
 
-    const hls = new Hls(hlsConfig);
+    const hls = new Hls(makeHlsConfig());
     hlsRef.current = hls;
 
     const tryLoad = (url: string): void => {
@@ -158,11 +289,11 @@ export function PlayerStage({
 
     // Stall detection: waiting events → collector records stall
     video.addEventListener('waiting', () => {
-      collectorRef.current.onStallStart();
+      collector.onStallStart();
       setIsLoading(true);
     });
     video.addEventListener('canplay', () => {
-      collectorRef.current.onStallEnd();
+      collector.onStallEnd();
       setIsLoading(false);
     });
 
@@ -170,11 +301,7 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.log(`[hls] manifest parsed, ${data.levels.length} levels`);
       setIsLoading(false);
-      void video.play().catch((err: Error) => {
-        // eslint-disable-next-line no-console
-        console.log('[hls] autoplay prevented:', err.message);
-        setIsPlaying(false);
-      });
+      playWithAudio(video, setIsMuted);
     });
 
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
@@ -225,7 +352,7 @@ export function PlayerStage({
         case 'destroyRebuild': {
           setErrorMsg('Rebuilding playback instance…');
           hls.destroy();
-          const reborn = new Hls(hlsConfig);
+          const reborn = new Hls(makeHlsConfig());
           hlsRef.current = reborn;
           reborn.loadSource(streamUrl);
           reborn.attachMedia(video);
@@ -238,7 +365,7 @@ export function PlayerStage({
             setErrorMsg(null);
             setFailoverNotice(`Switched to backup #${idx + 1}`);
             hls.destroy();
-            const next = new Hls(hlsConfig);
+            const next = new Hls(makeHlsConfig());
             hlsRef.current = next;
             next.loadSource(backup);
             next.attachMedia(video);
@@ -258,38 +385,32 @@ export function PlayerStage({
     });
 
     // Start MetricsCollector
-    collectorRef.current.attach(hls, video);
+    collector.attach(hls, video);
 
     // Send mount event
     if (channelId) {
-      void fetch('/api/log-playback', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId, event: 'mount' }),
-      }).catch(() => { /* logging is best-effort */ });
+      sendLog({ channelId, event: 'mount' });
     }
 
     // Periodic sample upload: 5s while playing
     const sampleTimer = window.setInterval(() => {
       if (!channelId) return;
-      const m = collectorRef.current.current;
+      const m = collector.current;
       if (m.samplingAt === 0) return;
-      void fetch('/api/log-playback', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channelId,
-          event: 'sample',
-          stalls: m.stallCount,
-          totalStallMs: Math.round(m.totalStallMs),
-          droppedFrames: m.droppedFrames,
-          decodedFrames: m.decodedFrames,
-          avgBufferSec: m.bufferSec,
-          avgBitrateKbps: m.bitrateKbps,
-          avgFps: m.fps,
-        }),
-      }).catch(() => { /* best-effort */ });
+      sendLog({
+        channelId,
+        event: 'sample',
+        stalls: m.stallCount,
+        totalStallMs: Math.round(m.totalStallMs),
+        droppedFrames: m.droppedFrames,
+        decodedFrames: m.decodedFrames,
+        avgBufferSec: m.bufferSec,
+        avgBitrateKbps: m.bitrateKbps,
+        avgFps: m.fps,
+      });
     }, 5_000);
 
-    // Keyboard shortcut: M toggles mute, F toggles fullscreen
+    // Keyboard shortcut: M toggles mute, F toggles fullscreen, K/space toggles play-pause
     const onKey = (e: KeyboardEvent): void => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === 'm' || e.key === 'M') {
@@ -299,6 +420,12 @@ export function PlayerStage({
         setIsMuted(v.muted);
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
+      } else if (e.key === 'k' || e.key === 'K' || e.key === ' ') {
+        e.preventDefault();
+        const v = videoRef.current;
+        if (!v) return;
+        if (v.paused) void v.play();
+        else v.pause();
       }
     };
     document.addEventListener('keydown', onKey);
@@ -312,29 +439,26 @@ export function PlayerStage({
     return () => {
       // Final unmount sample
       if (channelId) {
-        const m = collectorRef.current.current;
+        const m = collector.current;
         if (m.samplingAt !== 0) {
-          void fetch('/api/log-playback', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              channelId,
-              event: 'unmount',
-              stalls: m.stallCount,
-              totalStallMs: Math.round(m.totalStallMs),
-              droppedFrames: m.droppedFrames,
-              decodedFrames: m.decodedFrames,
-              avgBufferSec: m.bufferSec,
-              avgBitrateKbps: m.bitrateKbps,
-              avgFps: m.fps,
-            }),
-          }).catch(() => { /* best-effort */ });
+          sendLog({
+            channelId,
+            event: 'unmount',
+            stalls: m.stallCount,
+            totalStallMs: Math.round(m.totalStallMs),
+            droppedFrames: m.droppedFrames,
+            decodedFrames: m.decodedFrames,
+            avgBufferSec: m.bufferSec,
+            avgBitrateKbps: m.bitrateKbps,
+            avgFps: m.fps,
+          });
         }
       }
       window.clearInterval(sampleTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('fullscreenchange', onFsChange);
-      collectorRef.current.detach();
+      collector.detach();
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -347,10 +471,15 @@ export function PlayerStage({
       <video
         ref={videoRef}
         className="w-full h-full"
+        autoPlay
         playsInline
         onPlay={() => { setIsPlaying(true); }}
         onPause={() => setIsPlaying(false)}
         onClick={() => (videoRef.current?.paused ? videoRef.current?.play() : videoRef.current?.pause())}
+        onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+        onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
+        onDurationChange={() => setDuration(videoRef.current?.duration ?? 0)}
+        onSeeked={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
       />
 
       {isLoading && (
@@ -378,10 +507,17 @@ export function PlayerStage({
         <p className="text-sm font-medium">{streamName}</p>
       </div>
 
-      <QualityHUD collector={collectorRef.current} />
-
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-        <div className="flex items-center gap-3 text-white text-sm pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent">
+        <TimeSlider
+          currentTime={currentTime}
+          duration={duration}
+          seekable={isSeekable}
+          onSeek={(t) => {
+            const v = videoRef.current;
+            if (v) v.currentTime = t;
+          }}
+        />
+        <div className="flex items-center gap-3 px-3 pb-3 text-white text-sm pointer-events-none">
           <span className="bg-red-600 px-2 py-0.5 rounded text-xs font-semibold">
             {isPlaying ? '● LIVE' : '⏸ PAUSED'}
           </span>
@@ -389,6 +525,21 @@ export function PlayerStage({
             <span className="bg-black/60 px-2 py-0.5 rounded text-xs">{currentQuality}</span>
           )}
           <div className="flex-1" />
+          <button
+            onClick={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              if (v.paused) void v.play();
+              else v.pause();
+            }}
+            className="pointer-events-auto text-white hover:text-zinc-300 transition-colors p-1.5 rounded hover:bg-white/10"
+            title={isPlaying ? 'Pause (K)' : 'Play (K)'}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying
+              ? <Pause className="w-5 h-5" />
+              : <Play className="w-5 h-5" />}
+          </button>
           <button
             onClick={() => {
               const v = videoRef.current;
@@ -416,6 +567,92 @@ export function PlayerStage({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * TimeSlider — seek bar at the bottom of the player.
+ *
+ * Two states:
+ *   - `seekable` (VOD, finite duration): full slider, click/drag seeks via
+ *     `onSeek(newTime)`. Uses native <input type=range> for accessibility.
+ *   - not seekable (live stream, duration = Infinity): a static thin bar
+ *     rendered with the current buffered fraction if available. The
+ *     `currentTime` keeps incrementing because the player sits 10s behind
+ *     the live edge (hlsConfig.liveSyncDuration), so a live DVR within
+ *     the 80s backBuffer is technically possible — but exposing that as
+ *     a seek slider is fragile (different sources keep different window
+ *     sizes). For now, live just shows a static progress indicator.
+ *
+ * Why custom instead of native <video controls>: the bottom control bar
+ * already has custom buttons, and matching the visual language matters
+ * more than the small accessibility win from <video controls>.
+ */
+function TimeSlider({
+  currentTime,
+  duration,
+  seekable,
+  onSeek,
+}: {
+  currentTime: number;
+  duration: number;
+  seekable: boolean;
+  onSeek: (t: number) => void;
+}) {
+  const fmt = (s: number): string => {
+    if (!Number.isFinite(s) || s < 0) return '--:--';
+    const total = Math.floor(s);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+  };
+
+  // While the user is dragging, freeze the displayed value at what they
+  // picked — otherwise onTimeUpdate keeps pushing currentTime forward and
+  // the thumb visibly snaps back to the right while you drag left.
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragValue, setDragValue] = useState(0);
+  const displayTime = isDragging ? dragValue : currentTime;
+
+  if (!seekable) {
+    return (
+      <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums select-none">
+        <span className="w-10 text-right">{fmt(currentTime)}</span>
+        <div className="flex-1 h-1 bg-red-500/30 rounded overflow-hidden">
+          <div className="h-full bg-red-500 w-full animate-pulse" />
+        </div>
+        <span className="w-10">LIVE</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums">
+      <span className="w-10 text-right">{fmt(displayTime)}</span>
+      <input
+        type="range"
+        min={0}
+        max={duration}
+        step={0.1}
+        value={displayTime}
+        onChange={(e) => {
+          const t = Number(e.target.value);
+          setDragValue(t);
+          onSeek(t);
+        }}
+        onPointerDown={() => {
+          setIsDragging(true);
+          setDragValue(currentTime);
+        }}
+        onPointerUp={() => setIsDragging(false)}
+        onPointerCancel={() => setIsDragging(false)}
+        className="flex-1 h-1 accent-blue-500 cursor-pointer"
+        aria-label="Seek"
+      />
+      <span className="w-10">{fmt(duration)}</span>
     </div>
   );
 }

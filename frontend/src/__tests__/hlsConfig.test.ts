@@ -1,12 +1,15 @@
 /**
- * hlsConfig test — ensure "smoothness-first" tuning discipline (numbers do not drift). 
+ * hlsConfig test — ensure "smoothness-first" tuning discipline (numbers do not drift).
  *
  * Note: original "latency-first" values (liveSyncDuration=3 / maxBufferLength=30 / 1.1x catch-up)
- * have been replaced by M3.6 tuning — root cause of DW English stutter. 
+ * have been replaced by M3.6 tuning — root cause of DW English stutter.
+ *
+ * hls.js 1.6 migration: legacy `fragLoadingTimeOut` etc. are gone; pinned via
+ * `fragLoadPolicy.default.{maxTimeToFirstByteMs, maxLoadTimeMs, ...}`.
  */
 
 import { describe, it, expect } from 'vitest';
-import { hlsConfig } from '../live/hlsConfig';
+import { hlsConfig, makeHlsConfig } from '../live/hlsConfig';
 
 describe('hlsConfig (smoothness-first edition)', () => {
   it('enables low-latency mode', () => {
@@ -42,7 +45,40 @@ describe('hlsConfig (smoothness-first edition)', () => {
     expect(hlsConfig.abrEwmaSlowLive).toBeGreaterThanOrEqual(20);
   });
 
-  it('abandons stuck fragments within 10s (not 20s)', () => {
-    expect(hlsConfig.fragLoadingTimeOut).toBe(10_000);
+  it('recovers live edge on stall (1.6 liveSyncOnStallIncrease)', () => {
+    expect(hlsConfig.liveSyncOnStallIncrease).toBeGreaterThanOrEqual(1);
+  });
+
+  it('detects stalls with a small grace window', () => {
+    expect(hlsConfig.detectStallWithCurrentTimeMs).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it('fragment load policy caps TTFB at 8s and total at 20s (1.6)', () => {
+    const policy = hlsConfig.fragLoadPolicy?.default;
+    expect(policy).toBeDefined();
+    expect(policy?.maxTimeToFirstByteMs).toBeLessThanOrEqual(8_000);
+    expect(policy?.maxLoadTimeMs).toBeLessThanOrEqual(20_000);
+  });
+
+  it('fragment load policy has timeout + error retry with exponential backoff', () => {
+    const policy = hlsConfig.fragLoadPolicy?.default;
+    expect(policy?.timeoutRetry?.backoff).toBe('exponential');
+    expect(policy?.errorRetry?.backoff).toBe('exponential');
+    expect(policy?.timeoutRetry?.maxNumRetry).toBeGreaterThanOrEqual(4);
+    expect(policy?.errorRetry?.maxNumRetry).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('makeHlsConfig (per-mount runtime overrides)', () => {
+  it('clones the base config', () => {
+    const cfg = makeHlsConfig();
+    expect(cfg.liveSyncDuration).toBe(hlsConfig.liveSyncDuration);
+    expect(cfg.fragLoadPolicy).toEqual(hlsConfig.fragLoadPolicy);
+  });
+
+  it('returns a fresh object (not the singleton reference)', () => {
+    const a = makeHlsConfig();
+    const b = makeHlsConfig();
+    expect(a).not.toBe(b);
   });
 });

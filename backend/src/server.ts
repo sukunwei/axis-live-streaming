@@ -19,6 +19,7 @@ import { startHealthMonitor, getAllHealth } from './streaming/healthMonitor.js';
 import { startSseBroadcaster, handleSse } from './streaming/statusSse.js';
 import { mountMockFailure, handleMockRoute } from './streaming/mockFailure.js';
 import { recordPlayback, getPlaybackSummary } from './streaming/playbackLog.js';
+import { sendGzipped } from './http/gzip.js';
 
 /**
  * Smoothness score (0-5).
@@ -56,7 +57,21 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/channels') {
     const summary = getPlaybackSummary();
-    const enriched = getChannels()
+    const allChannels = getChannels();
+
+    // Collect unique upstream origins (primary + backups) for preconnect hints.
+    // The frontend injects <link rel="preconnect"> for each so the TLS/TCP
+    // handshake completes before the first manifest/segment fetch.
+    const originSet = new Set<string>();
+    for (const c of allChannels) {
+      try { originSet.add(new URL(c.primaryUrl).origin); } catch { /* skip bad url */ }
+      for (const b of c.backupUrls) {
+        try { originSet.add(new URL(b).origin); } catch { /* skip */ }
+      }
+    }
+    const upstreamOrigins = [...originSet].sort();
+
+    const enriched = allChannels
       .map(c => {
         const observed = summary[c.id];
         const staticScore = computeSmoothness(c);
@@ -67,6 +82,7 @@ const httpServer = http.createServer(async (req, res) => {
         return {
           id: c.id,
           sport: c.sport,
+          category: c.category,
           name: c.name,
           type: c.type,
           masterPath: c.masterPath,
@@ -79,21 +95,33 @@ const httpServer = http.createServer(async (req, res) => {
           observed: observed ?? null,
         };
       })
-      .sort((a, b) => b.smoothnessScore - a.smoothnessScore);  // strong → weak
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
+      .sort((a, b) => {
+        // Sports group first, then others; within each group, strongest smoothness first.
+        if (a.category !== b.category) {
+          return a.category === 'sports' ? -1 : 1;
+        }
+        return b.smoothnessScore - a.smoothnessScore;
+      });
+
+    // SWR cache: channel list changes rarely (registry + smoothness score).
+    // 60s fresh + 600s stale-while-revalidate keeps clients snappy on
+    // re-mount without making the UI feel stale.
+    sendGzipped(req, res, {
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ channels: enriched, upstreamOrigins }),
+      extra: { 'Cache-Control': 'public, max-age=60, stale-while-revalidate=600' },
     });
-    res.end(JSON.stringify(enriched));
     return;
   }
 
   if (url.pathname === '/api/playback-summary' && req.method === 'GET') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+    sendGzipped(req, res, {
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(getPlaybackSummary()),
+      extra: { 'Access-Control-Allow-Origin': '*' },
     });
-    res.end(JSON.stringify(getPlaybackSummary()));
     return;
   }
 

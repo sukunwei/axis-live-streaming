@@ -5,15 +5,31 @@
  * - Default-select the first channel
  * - Switching channels: setCurrent(id) triggers whole-component remount of PlayerStage via key={id}
  * - ChannelGrid triggers prefetch on hover (§4.2 fast switching)
+ * - Owns a shared MetricsCollector ref so QualityHUD can render as a sticky
+ *   panel in the right column under ChannelGrid. Sticky positioning keeps
+ *   bitrate / buffer / latency in view while the user scrolls the page.
+ * - PlayerStage is imported directly (no React.lazy). The hls.js chunk
+ *   (~80KB gz) used to be split out via lazy import, but the chunk fetch
+ *   before mount added ~100-300ms to TTFF on first load. For a video
+ *   site, TTFF dominates the perceived-perf budget; a slightly heavier
+ *   initial bundle is the right trade.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { PlayerStage } from '../components/Live/PlayerStage';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
+import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
 import { useSourceHealthSse } from '../hooks/useSourceHealthSse';
 import { useStreamingStore } from '../stores/streamingStore';
 import type { Channel } from '../lib/channels.config';
+import type { MetricsCollector } from '../live/MetricsCollector';
+
+interface ChannelsResponse {
+  channels: Channel[];
+  /** Unique upstream origins (primary + backup) — preconnect targets. */
+  upstreamOrigins: string[];
+}
 
 export default function App() {
   const channels = useStreamingStore(s => s.channels);
@@ -23,18 +39,23 @@ export default function App() {
 
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Fetch channel list on mount
+  // Shared collector: PlayerStage writes, QualityHUD reads (1Hz polling).
+  // Keying PlayerStage by channelId gives us a fresh collector per channel.
+  const collectorRef: MutableRefObject<MetricsCollector | null> = useRef(null);
+
+  // Fetch channel list on mount; also warm preconnect to upstream HLS hosts.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch('/channels');
         if (!res.ok) throw new Error(`/channels status ${res.status}`);
-        const data: Channel[] = await res.json();
+        const data = (await res.json()) as ChannelsResponse;
         if (cancelled) return;
-        setChannels(data);
-        if (data.length > 0 && !currentChannelId) {
-          setCurrent(data[0].id);
+        warmPreconnects(data.upstreamOrigins);
+        setChannels(data.channels);
+        if (data.channels.length > 0 && !currentChannelId) {
+          setCurrent(data.channels[0].id);
         }
       } catch (err) {
         if (!cancelled) setLoadError((err as Error).message);
@@ -55,7 +76,7 @@ export default function App() {
         <span className="text-xs text-zinc-500">Live Sports Streaming</span>
       </header>
       <main className="max-w-7xl mx-auto px-6 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           <div className="lg:col-span-2 space-y-4">
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
@@ -65,6 +86,7 @@ export default function App() {
                   streamName={currentChannel.name}
                   channelId={currentChannel.id}
                   backupStreamUrls={currentChannel.backupStreamUrls}
+                  collectorRef={collectorRef}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-500">
@@ -84,16 +106,44 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 space-y-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
               <ChannelGrid />
             </div>
-            <p className="mt-3 text-xs text-zinc-500 px-1">
+            <p className="text-xs text-zinc-500 px-1">
               Hover a channel to prefetch its master. Click to switch. Source health pushed via SSE.
             </p>
+            {/*
+              QualityHUD lives here as a sticky module: always rendered, sticks
+              to the top of the right column as the user scrolls. The HUD reads
+              `collectorRef.current` on every render — see the doc on its props
+              for why we pass the ref rather than a value.
+            */}
+            <div className="sticky top-4">
+              <QualityHUD collectorRef={collectorRef} />
+            </div>
           </div>
         </div>
       </main>
     </div>
   );
+}
+
+/**
+ * Inject <link rel="preconnect"> for each unique upstream HLS origin.
+ * Idempotent: re-running on channel-list refresh is a no-op (data-preconnect
+ * attribute guards against duplicates).
+ */
+function warmPreconnects(origins: readonly string[]): void {
+  if (typeof document === 'undefined') return;
+  const head = document.head;
+  for (const origin of origins) {
+    if (head.querySelector(`link[data-preconnect="${origin}"]`)) continue;
+    const link = document.createElement('link');
+    link.rel = 'preconnect';
+    link.href = origin;
+    link.crossOrigin = 'anonymous';
+    link.setAttribute('data-preconnect', origin);
+    head.appendChild(link);
+  }
 }

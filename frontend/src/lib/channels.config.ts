@@ -1,13 +1,16 @@
 /**
- * Shared type definitions — aligned with backend /channels response fields. 
- * Actual channel data fetched at runtime from /channels; this file only exports types. 
+ * Shared type definitions — aligned with backend /channels response fields.
+ * Actual channel data fetched at runtime from /channels; this file only exports types.
  */
 
 export type SourceHealth = 'ok' | 'degraded' | 'down';
 
+export type ChannelCategory = 'sports' | 'others';
+
 export interface Channel {
   id: string;
   sport: string;
+  category: ChannelCategory;
   name: string;
   type: 'hls';
   /** Backend proxy path, e.g. '/hls/mux/x36xhzz.m3u8' */

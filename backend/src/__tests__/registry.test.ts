@@ -16,9 +16,18 @@ describe('Channel registry', () => {
       expect(ch.id).toBeTruthy();
       expect(ch.name).toBeTruthy();
       expect(ch.sport).toBeTruthy();
+      expect(ch.category).toMatch(/^(sports|others)$/);
       expect(ch.primaryUrl).toMatch(/^https?:\/\//);
       expect(ch.masterPath).toBeTruthy();
-      expect(ch.backupUrls.length).toBeGreaterThan(0);
+      // backupUrls is now optional — see registry.ts file header. Just
+      // assert it exists as an array (can be empty).
+      expect(Array.isArray(ch.backupUrls)).toBe(true);
+    }
+  });
+
+  it('each channel declares a valid category', () => {
+    for (const ch of channels) {
+      expect(['sports', 'others']).toContain(ch.category);
     }
   });
 
