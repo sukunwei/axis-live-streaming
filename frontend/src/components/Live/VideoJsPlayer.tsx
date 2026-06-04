@@ -75,12 +75,35 @@ export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerPr
     });
     playerRef.current = player;
 
-    player.one('ready', () => {
+    // eslint-disable-next-line no-console
+    console.log('[VideoJsPlayer] player created, container has', container.children.length, 'children');
+
+    // Verbose debug listeners — drop after we know it works.
+    player.on('ready', () => {
+      // eslint-disable-next-line no-console
+      console.log('[VideoJsPlayer] ready');
       // a11y: announce the channel name on the underlying tech element.
       const techEl = player.tech().el() as HTMLVideoElement | undefined;
       if (techEl) {
         techEl.setAttribute('aria-label', `${metaRef.current.streamName} live stream`);
       }
+    });
+    player.on('loadedmetadata', () => {
+      // eslint-disable-next-line no-console
+      console.log('[VideoJsPlayer] loadedmetadata, duration=', player.duration());
+    });
+    player.on('error', () => {
+      // eslint-disable-next-line no-console
+      const err = player.error();
+      console.error('[VideoJsPlayer] error:', err);
+    });
+    player.on('play', () => {
+      // eslint-disable-next-line no-console
+      console.log('[VideoJsPlayer] play');
+    });
+    player.on('pause', () => {
+      // eslint-disable-next-line no-console
+      console.log('[VideoJsPlayer] pause');
     });
 
     // Clean up on unmount: dispose video.js (which removes its own DOM)
@@ -103,6 +126,8 @@ export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerPr
   useEffect(() => {
     const p = playerRef.current;
     if (!p) return;
+    // eslint-disable-next-line no-console
+    console.log('[VideoJsPlayer] setting src:', streamUrl);
     // video.js src() takes an array of source objects. Switching source
     // tears down the current VHS instance and rebuilds. The wrapping
     // DOM stays put, so React doesn't see anything change.
