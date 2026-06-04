@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { VideoJsPlayer } from '../components/Live/VideoJsPlayer';
+import { PlayerStage } from '../components/Live/PlayerStage';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
 import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
@@ -80,9 +80,13 @@ export default function App() {
           <div className="lg:col-span-2 space-y-4">
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
-                <VideoJsPlayer
+                <PlayerStage
+                  key={currentChannel.id}
                   streamUrl={currentChannel.streamUrl}
                   streamName={currentChannel.name}
+                  channelId={currentChannel.id}
+                  backupStreamUrls={currentChannel.backupStreamUrls}
+                  collectorRef={collectorRef}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-500">
@@ -102,7 +106,7 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="lg:col-span-1 space-y-4">
+          <div className="space-y-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
               <ChannelGrid />
             </div>

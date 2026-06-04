@@ -5,40 +5,40 @@
 
 ## Performance Optimizations (P0/P1/P2)
 
-> 三轮迭代全部已落地并合并。**预测收益** 列基于 Chrome DevTools 离线 throttle + 上游 HLS 一般响应大小；**实测量化** 需 Playwright 跑 headless session。
+> All three rounds of iteration are landed and merged. The **Predicted gain** column is based on Chrome DevTools offline throttle + typical upstream HLS response sizes; **measured quantification** requires a headless Playwright session.
 
-### 网络层（P0）
+### Network layer (P0)
 
-| 改动 | 文件 | 预测收益 | 实测 |
+| Change | File | Predicted gain | Measured |
 |---|---|---|---|
-| `<link rel=preconnect>` 后端（dev）+ dns-prefetch 兜底 | `frontend/index.html` | 首 SSE / `/hls/*` 省 50–200ms TCP+TLS | _TBD_ |
-| 动态注入 upstream preconnect（从 `/channels.upstreamOrigins`）| `frontend/src/app/App.tsx` | 每个 upstream 省 100–300ms DNS+TCP+TLS | _TBD_ |
-| `prefetchChannel` 预热 master **+ 第一 variant** | `frontend/src/live/ChannelSwitcher.ts` | 冷切台省 30–100ms | _TBD_ |
-| `/channels` 加 `max-age=60, stale-while-revalidate=600` | `backend/src/server.ts` | 二次访问直接 304 | _TBD_ |
-| segment 加 `immutable` + 透传 `Last-Modified` + 命中 `If-Modified-Since` → 304 | `backend/src/streaming/proxy.ts` | 多 tab / 浏览器回放省段字节 | _TBD_ |
-| `PlayerStage` 改 `React.lazy` + `Suspense` | `frontend/src/app/App.tsx` | hls.js ~80KB gz 不进首屏 bundle | _TBD_ |
-| 播放日志全切 `navigator.sendBeacon` | `frontend/src/components/Live/PlayerStage.tsx` | 不抢 HLS 段 socket，页面隐藏也能落盘 | — |
+| `<link rel=preconnect>` to backend (dev) + dns-prefetch fallback | `frontend/index.html` | first SSE / `/hls/*` saves 50–200ms TCP+TLS | _TBD_ |
+| Dynamic upstream preconnect injection (from `/channels.upstreamOrigins`) | `frontend/src/app/App.tsx` | saves 100–300ms DNS+TCP+TLS per upstream | _TBD_ |
+| `prefetchChannel` warms master **+ first variant** | `frontend/src/live/ChannelSwitcher.ts` | cold channel switch saves 30–100ms | _TBD_ |
+| `/channels` gets `max-age=60, stale-while-revalidate=600` | `backend/src/server.ts` | repeat visit goes straight to 304 | _TBD_ |
+| Segments get `immutable` + passthrough `Last-Modified` + `If-Modified-Since` → 304 | `backend/src/streaming/proxy.ts` | multi-tab / browser replay saves segment bytes | _TBD_ |
+| `PlayerStage` switched to `React.lazy` + `Suspense` | `frontend/src/app/App.tsx` | hls.js ~80KB gz stays out of first-load bundle | _TBD_ |
+| Playback logging fully on `navigator.sendBeacon` | `frontend/src/components/Live/PlayerStage.tsx` | doesn't compete with HLS segment sockets; survives page hide | — |
 
-### 运行时（P1）
+### Runtime (P1)
 
-| 改动 | 文件 | 预测收益 | 实测 |
+| Change | File | Predicted gain | Measured |
 |---|---|---|---|
-| `abrEwmaDefaultEstimate` 按 `navigator.connection.{downlink,effectiveType}` 选档 | `frontend/src/live/hlsConfig.ts` + `PlayerStage.tsx` | 移动端/弱网开局不再 3–5s 卡顿降档 | _TBD_ |
-| `upstreamManifestCache` 加 LRU 容量 100 | `backend/src/streaming/manifestCache.ts` | 长跑进程不再因 unique URL 涨内存 | — |
-| Service Worker 缓存 app shell + `/channels`（网络优先 + 后台刷新）| `frontend/public/sw.js` + `main.tsx` | 二次访问秒开 / 离线 | _TBD_ |
+| `abrEwmaDefaultEstimate` chooses tier from `navigator.connection.{downlink,effectiveType}` | `frontend/src/live/hlsConfig.ts` + `PlayerStage.tsx` | no more 3–5s startup downshift on mobile / weak network | _TBD_ |
+| `upstreamManifestCache` LRU capacity set to 100 | `backend/src/streaming/manifestCache.ts` | long-running process no longer leaks memory on unique URLs | — |
+| Service Worker caches app shell + `/channels` (network-first + background refresh) | `frontend/public/sw.js` + `main.tsx` | repeat visit instant / works offline | _TBD_ |
 
-### 传输层（P2）
+### Transport layer (P2)
 
-| 改动 | 文件 | 预测收益 | 实测 |
+| Change | File | Predicted gain | Measured |
 |---|---|---|---|
-| `/channels`、`/api/playback-summary`、所有 manifest 加 `gzip` | `backend/src/http/gzip.ts` + `proxy.ts` + `server.ts` | manifest 1–3KB → ~400B（节 60–80%），弱网 4G 节 100–200ms | _TBD_ |
-| 段响应 (`video/mp2t`) **不**加 gzip | — | 视频流已压缩，gzip 仅耗 CPU | — |
+| `/channels`, `/api/playback-summary`, all manifests get `gzip` | `backend/src/http/gzip.ts` + `proxy.ts` + `server.ts` | manifest 1–3KB → ~400B (60–80% saved), saves 100–200ms on weak 4G | _TBD_ |
+| Segment responses (`video/mp2t`) **don't** get gzip | — | video is already compressed; gzip only burns CPU | — |
 
-### 故意没做
+### Deliberately not done
 
-- **hls.js 段请求 `fetchPriority: high`**：hls.js 1.5/1.6 默认 XHR loader 无法透传 priority；改 fetch loader 工程量 > 收益。1.6 已用 `fragLoadPolicy.default` 拿到更精确的加载预算控制，等后续上 1.7+ fetch-loader 升级再评估。
-- **HTTP/3 / QUIC**：平台层，< 1% 用户受益。
-- **主 manifest 也缓存到 SW**：HTTP cache + SWR 已经够，SW 缓存增 stale 风险。
+- **hls.js segment `fetchPriority: high`**: hls.js 1.5/1.6 default XHR loader can't pass `fetchPriority` through; switching to the fetch loader costs more engineering than it returns. 1.6 already gives finer load-budget control via `fragLoadPolicy.default`; revisit when a 1.7+ fetch-loader lands.
+- **HTTP/3 / QUIC**: platform-level change, < 1% of users benefit.
+- **Master manifest also cached in the SW**: HTTP cache + SWR is already enough; adding SW cache adds stale risk.
 
 ## Quick Start
 
@@ -50,23 +50,48 @@ cp backend/.env.example  backend/.env
 pnpm start              # boots backend (:5174) + frontend (:5173)
 ```
 
-打开 http://localhost:5173，应该看到 4 频道网格 + 主播放器。
+Open http://localhost:5173 — you should see a 4-channel grid + main player.
 
 ## Architecture (TL;DR)
 
-```
-Upstream HLS ──► Node proxy ──► hls.js (browser) ──► MSE / <video>
-                    │
-                    ├── manifest rewrite (same-origin proxy paths)
-                    ├── segment stream pipe (no buffer, immutable + 304)
-                    ├── manifest cache (LRU 100, 2s TTL, request collapsing)
-                    ├── gzip on text responses (manifests + /channels + /api)
-                    ├── health monitor (5s probe)
-                    │      └── SSE → SourceStatusBadge + RecoveryGate
-                    └── mock injector (POST /mock/break/:id for demo)
+```mermaid
+flowchart LR
+    subgraph Upstream["Upstream HLS"]
+        U1[Red Bull TV<br/>Akamai]
+        U2[ACC Network<br/>Amagi]
+        U3[DraftKings<br/>Zype]
+        U4[Live Star<br/>SiliconWeb]
+    end
+
+    subgraph Proxy["Node proxy :5174"]
+        Rewrite[Manifest rewrite<br/>same-origin paths]
+        Cache[(Manifest cache<br/>LRU 100, 2s TTL)]
+        Pipe[Segment stream pipe<br/>chunked, immutable + 304]
+        Gzip[gzip on text]
+        Health[Health monitor<br/>5s probe]
+        Mock[Mock injector<br/>POST /mock/break/:id]
+    end
+
+    subgraph Browser["Browser :5173"]
+        Hls[hls.js]
+        Stage[PlayerStage]
+        MSE[MSE / &lt;video&gt;]
+    end
+
+    Upstream -- HLS --> Rewrite
+    Rewrite --> Cache
+    Cache --> Pipe
+    Pipe --> Gzip
+    Gzip -- m3u8 + ts --> Hls
+    Hls --> Stage
+    Stage --> MSE
+
+    Health -.SSE.-> Stage
+    Health -.probe.-> Upstream
+    Mock -.503.-> Upstream
 ```
 
-- **Frontend**: React 18 + Vite + hls.js 1.6 + Zustand. PlayerStage direct import (lazy import was tried and reverted — see TTFF regression in commit history).
+- **Frontend**: React 18 + Vite + hls.js 1.6 + Zustand. `PlayerStage` direct import (lazy import was tried and reverted — see TTFF regression in commit history).
 - **Backend**: Node + TypeScript + native `http` + `ws`. Single in-process instance; in-memory caches with proper LRU eviction.
 - **Data flow**: Browser **only** connects to own backend WS/HTTP. Never direct to upstream — proxy is the single source of truth, hides upstream topology, and centralises caching.
 
@@ -84,80 +109,86 @@ Detail and protocol spec: [`docs/streaming-technical-design.md`](docs/streaming-
 
 ## Source Strategy
 
-> 当前注册表见 [`backend/src/streaming/channels.config.ts`](backend/src/streaming/channels.config.ts)。下表是各频道**实际接入**的源；上游失效时可通过修改注册表切换，proxy 层无需改动。
+> Current registry: [`backend/src/streaming/channels.config.ts`](backend/src/streaming/channels.config.ts). The table below lists the **actually wired** source for each channel; if an upstream fails, swap it in the registry — the proxy layer doesn't need to change.
 >
-> 频道按 `category` 字段分组（`sports` / `others`），在 `/channels` 响应里 sports 在前 others 在后，同组内按 smoothnessScore 降序。
+> Channels are grouped by the `category` field (`sports` / `others`); in the `/channels` response, `sports` come first then `others`, both sorted by `smoothnessScore` descending within their group.
 
 ### sports
 
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
-| `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV 全球版（直 Akamai），6 档到 **1080p**（含 180p/240p/360p/540p）|
-| `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network（ACC 大学体育），5 个变体，Amagi 平台 |
-| `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network，4 视频档 + I-frame + 字幕，Zype CDN |
+| `red-bull-tv` | Extreme Sports | `rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8` | Red Bull TV global edition (direct Akamai), 6 variants up to **1080p** (180p/240p/360p/540p/720p/1080p) |
+| `acc-network` | College Sports | `raycom-accdn-firetv.amagi.tv/playlist.m3u8` | ACC Digital Network (ACC college sports), 5 variants, Amagi platform |
+| `draftkings` | Sports Betting | `na.linear.zype.com/.../live.m3u8` | DraftKings Network, 4 video variants + I-frame + subtitle, Zype CDN |
 
 ### others
 
 | Channel | Sport | Upstream | Notes |
 |---------|-------|----------|-------|
-| `livestar` | General | `livestar.siliconweb.com/starvod/star_int/star_inthd.m3u8` | Live Star HD —— **单档 media playlist**（无 master / 无 variants），12s 段，720p 推测（`hd` 文件名），live。`backupUrls` 故意为空：没有同内容多 CDN 备选，**走 SSE failover 反而会把用户切到别处内容**（见下文"已知问题"）。 |
+| `livestar` | General | `livestar.siliconweb.com/starvod/star_int/star_inthd.m3u8` | Live Star HD — **single-bitrate media playlist** (no master, no variants), 12s segments, presumed 720p (the `hd` filename), live. `backupUrls` is intentionally empty: there is no same-content multi-CDN source, so **SSE failover would land users on a different channel's content** (see "Known issue" below). |
 
-**Failover cross-references**：每个 sports 频道列了 2 个其它源做 backup（不同 CDN），所以任意一路挂掉都能切到不共享 upstream 的回源。`livestar` 没列。**（⚠ 已知问题，详见下文）**
+**Failover cross-references**: each sports channel lists 2 other sources as backup (different CDNs), so any single upstream going down can fail over to a non-shared origin. `livestar` lists none. **(⚠ known issue, see below)**
 
-### ⚠ 已知问题：SSE-driven failover 切到"错内容"
+### ⚠ Known issue: SSE-driven failover lands on "wrong content"
 
-`PlayerStage.tsx` 的 `health === 'down'` 监听会在原频道 2s down 时自动 `hls.loadSource(backupStreamUrls[0])`。当前 `backupUrls` 字段存的是**其它频道的 URL**（不是"同内容不同 CDN"），所以 NHL down → 显示 ACCDN 大学体育（用户点 NHL 看到大学橄榄球），是错内容 UX。
+The `health === 'down'` listener in `PlayerStage.tsx` auto-`hls.loadSource(backupStreamUrls[0])` when the original channel has been down for 2s. The current `backupUrls` field stores **other channels' URLs** (not "same content, different CDN"), so when NHL goes down the user sees ACCDN college sports (they clicked NHL and now see college football) — a wrong-content UX.
 
-**临时修法**：把 NHL 从注册表里删了（NHL 移除前的 backup #1 是 ACCDN，错得最明显；其它 4 个 backup 至少"都是体育"，不如 NHL-ACCDN 跨类那样刺眼）。
+**Temporary fix**: removed NHL from the registry (NHL's pre-removal backup #1 was ACCDN — the most jarring mismatch; the other 4 backups at least "are all sports", not as visibly cross-category as NHL→ACCDN).
 
-**彻底修法**（已列入 `Next Steps`，未实现）：
-- `backupUrls` 字段语义改：存"同频道从不同 CDN 拿的同一条 master URL"，而非"另一个频道的 URL"
-- 若没有同内容多 CDN 源，就别让 SSE failover 走这条路——只显示错误状态让用户手动切
-- 或者：SSE-driven failover 走 `/mock/recover` 等待上游恢复
+**Proper fix** (listed in `Next Steps`, not implemented):
+- Change `backupUrls` field semantics: store "the same master URL fetched from a different CDN for the same channel", not "another channel's URL"
+- If no same-content multi-CDN source exists, don't have SSE failover go down this path — only show an error state and let the user switch manually
+- Or: SSE-driven failover goes through `/mock/recover` and waits for the upstream to recover
 
-> **关于源稳定性**：所有 URL 在 2026-06-03 已 curl 端到端验证（master 200 → variant 200 → segment 200）。**扫了 30+ 候选源**，绝大多数（Abu Dhabi / Dubai / Pluto stitcher / beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport / FITE-247 / ATV2 / Pluto M3U lists / 等）都因为 404 / TLS 拒握 / DNS 解析不了 / 协议不对（Pluto Stitcher）/ Cloudflare 风控（nocords）失败，详细 discard 列表在 commit history 里。公共源随时可能失效，部署前可跑 `scripts/test-sources.sh` 复测。
+> **Source stability**: every URL was end-to-end curl-verified on 2026-06-03 (master 200 → variant 200 → segment 200). **30+ candidate sources were scanned**; the vast majority (Abu Dhabi / Dubai / Pluto stitcher / beIN Espanol / FanDuel / ACCDN-alternate / B1B Box / Afizzionados / EDGEsport / FITE-247 / ATV2 / Pluto M3U lists / etc.) failed with 404 / TLS handshake rejection / unresolvable DNS / wrong protocol (Pluto Stitcher) / Cloudflare bot challenge (nocords). The full discarded list lives in the commit history. Public sources can fail at any time — rerun `scripts/test-sources.sh` before any deployment.
 
 ## Live Demo
 
-部署到 Vercel/Railway 或用 tunnel 暴露本地 dev 服务器。**最快 5 分钟**：
+Deploy to Vercel/Railway or expose your local dev server through a tunnel. **Fastest path: 5 minutes**.
 
-### ngrok（推荐，最快）
+### ngrok (recommended, fastest)
 
 ```bash
-# 安装（macOS）
+# Install (macOS)
 brew install ngrok
-ngrok config add-authtoken <your-token>    # 一次性，去 ngrok.com 注册
+ngrok config add-authtoken <your-token>    # one-time, sign up at ngrok.com
 
-# 启动后端
+# Start the backend
 pnpm --filter backend dev                # localhost:5174
 
-# 另开一个 terminal，暴露 5174
+# In another terminal, expose 5174
 ngrok http 5174
-# 输出 Forwarding 行就是公网 URL，例如：
+# The Forwarding line is your public URL, e.g.:
 #   https://a1b2c3d4.ngrok-free.app → http://localhost:5174
 ```
 
-然后前端 Vite dev 服务器跑在 5173 也用 ngrok 暴露（或者直接改 `frontend/.env` 把 `VITE_API_BASE` 指到后端的 ngrok URL）。
+Then either ngrok the Vite dev server on 5173 as well, or point `frontend/.env` `VITE_API_BASE` at the backend's ngrok URL.
 
-### cloudflared（免费、无需账号）
+### cloudflared (free, no account)
 
 ```bash
 brew install cloudflared
 cloudflared tunnel --url http://localhost:5174
-# 输出 https://<random>.trycloudflare.com → http://localhost:5174
+# Output: https://<random>.trycloudflare.com → http://localhost:5174
 ```
 
-### 部署到 Railway + Vercel（更稳，30-60 min）
+### Deploy to Railway + Vercel (more stable, 30-60 min)
 
-参考 `docs/streaming-technical-design.md` §1.3：后端 `railway up`、前端 `vercel --prod`、Vercel 环境变量 `VITE_API_BASE` 指 Railway URL。
+See `docs/streaming-technical-design.md` §1.3: backend via `railway up`, frontend via `vercel --prod`, Vercel env var `VITE_API_BASE` points at the Railway URL.
 
 ## Next Steps (more time would do)
 
-1. **Playwright 自动化测量** — headless Chrome 跑 5min 完整 session，输出真实 TTFF / 卡顿率 / 内存 / 帧丢失
-2. **WebRTC / WHEP 低延迟通道** — MediaMTX 输出 WebRTC，对核心赛事压到亚秒级
-3. **Redis 段缓存外置** — 真正扇出到多实例 + CDN 前置
-4. **backup 走 proxy** — 当前 failover 时直连上游，改为 `/hls-proxy?u=<encoded>` 统一代理
-5. **真 sports 源扩展** — 当前 PRD "2 sports" 用 ACCDN + NHL 满足；下一步可加 Pluto TV (Pluto TV Sports) / Tubi (Fox Sports) 拿到更多品类
+1. **Playwright automated measurement** — headless Chrome runs a 5min full session, outputs real TTFF / stall rate / memory / frame drops.
+2. **WebRTC / WHEP low-latency path** — MediaMTX outputs WebRTC, push core events below 1s.
+3. **Externalize the segment cache to Redis** — true fanout to multi-instance + CDN fronting.
+4. **Backups go through the proxy** — today failover reaches upstream directly; reroute through `/hls-proxy?u=<encoded>`.
+5. **Real sports source expansion** — the current PRD "2 sports" is met by ACCDN + NHL; next add Pluto TV (Pluto TV Sports) / Tubi (Fox Sports) for more variety.
+6. **Channel thumbnail (live snapshot)** — `ChannelGrid` is currently text-only cards. Add per-channel thumbnail via backend ffmpeg frame-grab (every 10–15s, cached at `/thumb/:channel.jpg`, TTL matched to grab cadence). Frontend `<img src="/thumb/:id.jpg?t={ts}">` gives a "live now" feel that static logos can't match. Fallback paths: read HLS thumbnail track (`EXT-X-IMAGE-STREAM-INF`, Mux/DraftKings ship one) when present; static channel logo if ffmpeg isn't available.
+7. **MP4 Progressive (VOD) lane** — currently HLS-live only. Add `type === 'mp4'` branch in `PlayerStage` — native `<video src>`, zero new dependencies, ~30 lines. Unlocks match highlights / previews / post-game replay without bringing in dash.js or other libraries.
+
+## Costs
+
+**$0.** No paid services used. All HLS upstreams (Akamai / Amagi / Zype / siliconweb) are public feeds. ngrok / Vercel / Railway all on free tiers. No managed streaming APIs (no Mux, no Cloudflare Stream, no AWS MediaConvert).
 
 ## License
 

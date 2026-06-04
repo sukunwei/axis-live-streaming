@@ -12,7 +12,7 @@
  *    FITE-247 / ATV2) failed with 404 / TLS / DNS / 405 errors. The discarded list
  *    lives in commit history if anyone wants to retry.
  *
- * Current config: 5 sports + 1 others = 6 channels total.
+ * Current config: 3 sports + 1 others = 4 channels total.
  *
  * NHL was removed 2026-06-03 because the SSE-driven failover
  * (PlayerStage.tsx, the `health === 'down'` effect) switches to the
@@ -70,6 +70,13 @@ const sportsChannels: readonly Channel[] = [
     live: true,
     variants: 6,  // 180p / 240p / 360p / 540p / 720p / 1080p (6660 kbps)
     backupUrls: [
+      // Same content, single-bitrate 1080p fallback: when the multi-bitrate
+      // master has issues but the Akamai origin is still up, drop ABR and
+      // lock to the top tier. The .ts paths in this media playlist are
+      // absolute Akamai URLs that the proxy rewrites to
+      // /hls/<id>/<seg>.ts.
+      'https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master_6660.m3u8',
+      // Different content (cross-channel failover, last resort).
       'https://raycom-accdn-firetv.amagi.tv/playlist.m3u8',
       'https://na.linear.zype.com/e0bd0e23-a958-4e43-8164-4f2fef8876a8/fd3614bd-90bf-4530-a277-65ae3a1720c8-zype/live.m3u8',
     ],
