@@ -126,12 +126,21 @@ export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerPr
   useEffect(() => {
     const p = playerRef.current;
     if (!p) return;
+    // Resolve the relative path against the page origin. The <video>
+    // element is created via document.createElement + appendChild; without
+    // a document <base>, the browser may resolve 'src' against an
+    // unexpected base URL (chrome resolves it to about:blank in some
+    // cases for orphan elements). Passing an absolute URL sidesteps the
+    // whole class of base-URL resolution issues.
+    const absolute = streamUrl.startsWith('http')
+      ? streamUrl
+      : `${window.location.origin}${streamUrl.startsWith('/') ? '' : '/'}${streamUrl}`;
     // eslint-disable-next-line no-console
-    console.log('[VideoJsPlayer] setting src:', streamUrl);
+    console.log('[VideoJsPlayer] setting src:', absolute);
     // video.js src() takes an array of source objects. Switching source
     // tears down the current VHS instance and rebuilds. The wrapping
     // DOM stays put, so React doesn't see anything change.
-    p.src([{ src: streamUrl, type: 'application/x-mpegURL' }]);
+    p.src([{ src: absolute, type: 'application/x-mpegURL' }]);
   }, [streamUrl]);
 
   // 3) Update poster / aria-label when streamName or poster changes.
