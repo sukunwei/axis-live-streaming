@@ -106,6 +106,7 @@ flowchart LR
 - **hls.js direct, no Video.js / Shaka wrapper** — gain fine-grained control over buffer / ABR / error recovery (our `RecoveryGate` 4-state machine + `fragLoadPolicy` 1.6 declarative loading policy both call hls.js directly); cost is handling every failure mode ourselves. A wrapper library saves time but hides the levers that matter.
 - **Single-instance Node backend, all state in-process** — gain zero external dependencies and trivial deployment (manifest LRU cache + SSE broadcaster + segment proxy all share memory); cost is per-instance caches and SSE on horizontal scale (would need Redis pub/sub).
 - **No WebRTC / MediaMTX** — gain the ability to focus the 48h budget on HLS stream quality; cost is the latency ceiling of ~2-6s (LL-HLS) or 6-30s (standard HLS), which rules out sub-second edge for marquee events.
+- **No Mux / Cloudflare** — 4 public CDNs, $0.
 - **Smoothness over latency** — `hlsConfig` Tune 3 (`liveSyncDuration=10s` + `maxBufferLength=80s`) trades 10s of live edge for an 8-10s stable buffer and a stall rate under 1%; cost is ~5-7s extra to start playing and 10s from the live edge.
 
 ## Next Steps
