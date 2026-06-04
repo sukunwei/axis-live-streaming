@@ -81,7 +81,6 @@ export default function App() {
             <div className="aspect-video bg-black rounded-xl overflow-hidden">
               {currentChannel ? (
                 <VideoJsPlayer
-                  key={currentChannel.id}
                   streamUrl={currentChannel.streamUrl}
                   streamName={currentChannel.name}
                 />

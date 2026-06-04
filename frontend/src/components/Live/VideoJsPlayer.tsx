@@ -1,24 +1,29 @@
 /**
- * VideoJsPlayer — video.js 8 + VHS (videojs-http-streaming) wrapper.
+ * VideoJsPlayer — video.js 8 + VHS wrapper, React-friendly.
  *
- * Phase 1 of the video.js migration (see docs/dev-video.md). Just the
- * player UI: the controls bar, big-play button, time slider, quality
- * menu, fullscreen toggle — all from video.js's default skin.
+ * Phase 1 of the video.js migration (see docs/dev-video.md). The
+ * player UI is owned entirely by video.js's default skin; React just
+ * provides a stable mount point.
  *
- * The hls.js engine is wrapped inside VHS (same hls.js 1.6.16 we used
- * before), so manifest parsing / ABR / MSE appending behave identically
- * to the old PlayerStage. The browser hits our proxy at the same
- * `/hls/<id>/<path>` URL, so all the P0/P1/P2 perf work on the proxy
- * side keeps working.
+ * React ownership boundary:
+ *   - React owns ONE element: the <div ref={containerRef}> below.
+ *   - video.js owns everything inside: the wrapping vjs-tech div, the
+ *     <video> element, all the control bar DOM.
+ *   - When the component unmounts, we call player.dispose() FIRST
+ *     (which removes video.js's DOM), then React removes the (now
+ *     empty) container.
+ *   - Crucially: the <video> element is NOT in the JSX. video.js
+ *     creates it via document.createElement + containerRef.appendChild.
+ *     This avoids the classic "Failed to execute 'removeChild'"
+ *     error: React tries to removeChild a node that video.js has
+ *     already moved/rewrapped.
  *
- * What this replaces (for now): only the visual chrome of the player.
- * The custom RecoveryGate, MetricsCollector, SSE-driven failover, and
- * QualityHUD stay wired to the (now-removed) PlayerStage via a noop
- * ref for this phase. They will be ported in Phase 2-3 of the
- * migration plan.
- *
- * Cleanup: video.js is stateful (it attaches DOM event listeners and
- * spawns a VHS instance). Always call `player.dispose()` on unmount.
+ * Channel switching: we never re-mount this component. When
+ * `streamUrl` changes (channel clicked), the second useEffect calls
+ * `player.src(...)` which is video.js's native hot-swap path —
+ * the VHS instance tears down and rebuilds, but the wrapping
+ * DOM stays put. App.tsx must NOT pass `key={channelId}` on this
+ * component (removed in this commit).
  */
 import { useEffect, useRef } from 'react';
 import videojs from 'video.js';
@@ -34,69 +39,87 @@ export interface VideoJsPlayerProps {
 }
 
 export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
+  // Keep latest streamName/poster accessible from the ready callback
+  // without re-running the init effect when they change.
+  const metaRef = useRef({ streamName, poster });
+  metaRef.current = { streamName, poster };
 
+  // 1) Mount: create the <video> element imperatively, init player.
   useEffect(() => {
-    if (!videoRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
-    // video.js mutates the <video> element in place (replaces with a
-    // wrapping div + its own controls). We let it own that DOM.
-    const player = videojs(videoRef.current, {
-      autoplay: 'muted',  // hint; we still set muted=true below to satisfy autoplay policy
+    // Create the video element ourselves so React doesn't track it.
+    const videoEl = document.createElement('video');
+    videoEl.className = 'video-js vjs-default-skin vjs-big-play-centered w-full h-full';
+    videoEl.setAttribute('playsinline', '');
+    container.appendChild(videoEl);
+
+    const player = videojs(videoEl, {
+      autoplay: 'muted',  // hint; we also set muted=true below for autoplay policy
       muted: true,        // autoplay policy requires muted on cold load
       playsinline: true,
       controls: true,
-      fluid: true,        // responsive container sizing
+      fluid: true,
       responsive: true,
       preload: 'auto',
-      // source: set below so we can rebuild on streamUrl change
-      sources: [{
-        src: streamUrl,
-        type: 'application/x-mpegURL',
-      }],
-      // VHS config — mostly default; we keep our P0/P1 tuning on the
-      // proxy side, so the engine itself doesn't need many overrides.
+      // No initial source — the second useEffect below calls
+      // player.src([...]) once the player is ready.
       html5: {
         vhs: {
-          // Don't override native HLS (Safari) — let Safari use its
-          // built-in MSE pipeline; only Chrome/Firefox use VHS+hls.js.
-          overrideNative: false,
+          overrideNative: false,  // Safari uses native HLS; others use VHS+hls.js
         },
       },
     });
     playerRef.current = player;
 
-    // The <video> tag doesn't render the poster attribute correctly
-    // once video.js takes it over; set it on the player instead.
-    if (poster) {
-      player.poster(poster);
-    }
-    // a11y: announce the channel name on the underlying tech element.
-    // video.js initializes async; player.tech() is undefined until the
-    // 'ready' event fires, so we wait rather than reading it immediately
-    // (which would throw "Cannot read properties of undefined (reading
-    // 'el')").
-    player.on('ready', () => {
+    player.one('ready', () => {
+      // a11y: announce the channel name on the underlying tech element.
       const techEl = player.tech().el() as HTMLVideoElement | undefined;
       if (techEl) {
-        techEl.setAttribute('aria-label', `${streamName} live stream`);
+        techEl.setAttribute('aria-label', `${metaRef.current.streamName} live stream`);
       }
     });
 
+    // Clean up on unmount: dispose video.js (which removes its own DOM)
+    // BEFORE React tries to removeChild the container.
     return () => {
-      player.dispose();
-      playerRef.current = null;
+      const p = playerRef.current;
+      if (p) {
+        try { p.dispose(); } catch { /* defensive: video.js sometimes throws on rapid dispose */ }
+        playerRef.current = null;
+      }
+      // Remove the video element we created. video.js's dispose() may
+      // have already done this; check first.
+      if (videoEl.parentNode === container) {
+        container.removeChild(videoEl);
+      }
     };
-  }, [streamUrl, streamName, poster]);
+  }, []);  // mount once
 
-  return (
-    <div data-vjs-player className="w-full h-full">
-      <video
-        ref={videoRef}
-        className="video-js vjs-default-skin vjs-big-play-centered w-full h-full"
-        playsInline
-      />
-    </div>
-  );
+  // 2) Update source when streamUrl changes (no remount).
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    // video.js src() takes an array of source objects. Switching source
+    // tears down the current VHS instance and rebuilds. The wrapping
+    // DOM stays put, so React doesn't see anything change.
+    p.src([{ src: streamUrl, type: 'application/x-mpegURL' }]);
+  }, [streamUrl]);
+
+  // 3) Update poster / aria-label when streamName or poster changes.
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    if (poster) p.poster(poster);
+    p.one('ready', () => {
+      const techEl = p.tech().el() as HTMLVideoElement | undefined;
+      if (techEl) techEl.setAttribute('aria-label', `${streamName} live stream`);
+    });
+  }, [poster, streamName]);
+
+  // React only renders the container; video.js owns everything inside.
+  return <div ref={containerRef} className="w-full h-full" data-vjs-player />;
 }
