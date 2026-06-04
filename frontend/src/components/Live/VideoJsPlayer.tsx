@@ -81,11 +81,23 @@ export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerPr
     // Verbose debug listeners — drop after we know it works.
     player.on('ready', () => {
       // eslint-disable-next-line no-console
-      console.log('[VideoJsPlayer] ready');
+      console.log('[VideoJsPlayer] ready, video size:', player.currentWidth(), 'x', player.currentHeight());
       // a11y: announce the channel name on the underlying tech element.
       const techEl = player.tech().el() as HTMLVideoElement | undefined;
       if (techEl) {
         techEl.setAttribute('aria-label', `${metaRef.current.streamName} live stream`);
+      }
+      // Explicitly call play() to start. autoplay: 'muted' relies on
+      // the browser being ready to play, but the ready event fires
+      // before the manifest is fully loaded — Chrome may reject the
+      // autoplay request. Calling play() ourselves gives the browser a
+      // second chance once it's actually ready to render frames.
+      const p = player.play();
+      if (p && typeof p.then === 'function') {
+        p.catch((err: Error) => {
+          // eslint-disable-next-line no-console
+          console.log('[VideoJsPlayer] play() rejected:', err.message);
+        });
       }
     });
     player.on('loadedmetadata', () => {
