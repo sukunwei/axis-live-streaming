@@ -79,6 +79,14 @@ const httpServer = http.createServer(async (req, res) => {
         // otherwise fall back to static score.
         const haveEnoughData = !!observed && observed.samples >= 5;
         const finalScore = haveEnoughData ? observed!.observedScore : staticScore;
+        // P0-3: same-content backup URLs as proxy-rewritten relative paths.
+        // Each entry's basename is preserved (the proxy resolves against
+        // the channel's primaryUrl directory).
+        const sameContentBackupUrls = c.sameContentBackups.map(b => {
+          const filename = new URL(b.url).pathname.split('/').pop() ?? '';
+          return `/hls/${c.id}/${filename}`;
+        });
+        const autoFailoverEnabled = sameContentBackupUrls.length > 0;
         return {
           id: c.id,
           sport: c.sport,
@@ -87,7 +95,13 @@ const httpServer = http.createServer(async (req, res) => {
           type: c.type,
           masterPath: c.masterPath,
           streamUrl: `/hls/${c.id}/${c.masterPath}`,
-          backupStreamUrls: c.backupUrls,
+          // P0-3: always empty here. Cross-channel URLs are no longer
+          // populated; the deprecated field is kept as a sentinel so
+          // the M2 commit can grep-and-remove any leftover readers.
+          backupStreamUrls: [] as string[],
+          // P0-3: actual failover target list (proxy paths).
+          sameContentBackupUrls,
+          autoFailoverEnabled,
           live: c.live,
           variants: c.variants,
           smoothnessScore: finalScore,

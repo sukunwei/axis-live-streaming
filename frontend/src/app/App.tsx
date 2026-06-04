@@ -20,6 +20,7 @@ import { PlayerStage } from '../components/Live/PlayerStage';
 import { ChannelGrid } from '../components/Live/ChannelGrid';
 import { QualityHUD } from '../components/Live/QualityHUD';
 import { SourceStatusBadge } from '../components/Live/SourceStatusBadge';
+import { MockControls } from '../components/Live/MockControls';
 import { useSourceHealthSse } from '../hooks/useSourceHealthSse';
 import { useStreamingStore } from '../stores/streamingStore';
 import type { Channel } from '../lib/channels.config';
@@ -75,6 +76,18 @@ export default function App() {
         <h1 className="text-lg font-semibold">axis-live-streaming</h1>
         <span className="text-xs text-zinc-500">Live Sports Streaming</span>
       </header>
+
+      {import.meta.env.DEV && currentChannel && (
+        <div
+          className="border-b border-amber-900/40 bg-amber-950/20 px-6 py-1.5 flex items-center"
+          data-testid="mock-dev-bar"
+        >
+          <MockControls
+            channelId={currentChannel.id}
+            channelName={currentChannel.name}
+          />
+        </div>
+      )}
       <main className="max-w-7xl mx-auto px-6 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           <div className="lg:col-span-2 space-y-4">
@@ -85,7 +98,8 @@ export default function App() {
                   streamUrl={currentChannel.streamUrl}
                   streamName={currentChannel.name}
                   channelId={currentChannel.id}
-                  backupStreamUrls={currentChannel.backupStreamUrls}
+                  sameContentBackupUrls={currentChannel.sameContentBackupUrls}
+                  autoFailoverEnabled={currentChannel.autoFailoverEnabled}
                   collectorRef={collectorRef}
                 />
               ) : (

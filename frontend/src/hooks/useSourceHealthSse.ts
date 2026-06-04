@@ -1,8 +1,15 @@
 /**
- * useSourceHealthSse — subscribe to /events SSE, update store.healthByChannel. 
+ * useSourceHealthSse — subscribe to /events SSE, update store.healthByChannel
+ * and store.reasonByChannel (P0-3).
  *
- * EventSource auto-reconnects; we just open on mount, close on unmount. 
- * Each source-health event → setHealth(channelId, status). 
+ * EventSource auto-reconnects; we just open on mount, close on unmount.
+ * Each source-health event → setHealth(channelId, status) + setReason(channelId, reason).
+ *
+ * On reconnect, the SSE does not replay history. The /health/streaming
+ * endpoint is the recovery path (call it once on `error` to backfill
+ * the current state). This hook leaves that to consumers — for the
+ * P0-3 demo the steady-state ok → ok transition doesn't matter and a
+ * transient reason staleness is harmless.
  */
 
 import { useEffect } from 'react';
@@ -18,6 +25,7 @@ interface HealthEvent {
 
 export function useSourceHealthSse(): void {
   const setHealth = useStreamingStore(s => s.setHealth);
+  const setReason = useStreamingStore(s => s.setReason);
 
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
@@ -27,6 +35,7 @@ export function useSourceHealthSse(): void {
       try {
         const data: HealthEvent = JSON.parse(e.data);
         setHealth(data.channel, data.status);
+        setReason(data.channel, data.reason);
       } catch {
         // ignore malformed data
       }
@@ -39,5 +48,5 @@ export function useSourceHealthSse(): void {
     return () => {
       es.close();
     };
-  }, [setHealth]);
+  }, [setHealth, setReason]);
 }

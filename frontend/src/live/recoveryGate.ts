@@ -84,3 +84,24 @@ export class RecoveryGate {
     if (fresh.length !== this.events.length) this.events.length = 0, this.events.push(...fresh);
   }
 }
+
+/**
+ * P0-3: resolve the next same-content backup URL the player should
+ * `hls.loadSource()` when `RecoveryGate` returns the `failover` action.
+ * Returns `null` when the gate has escalated past the available
+ * backups — the player must surface a terminal state (e.g.
+ * `PlaybackBlockedOverlay`) rather than load a cross-channel URL.
+ *
+ * Boundary guarantee: the function's only source of URLs is
+ * `sameContentBackupUrls`. There is no code path that can return a URL
+ * outside that list. The cross-channel failure mode of the pre-P0-3
+ * `backupUrls` field is therefore not reproducible from this function.
+ */
+export function resolveFailoverTarget(
+  sameContentBackupUrls: readonly string[],
+  gateIndex: number,
+): string | null {
+  if (!Array.isArray(sameContentBackupUrls)) return null;
+  if (gateIndex < 0 || !Number.isInteger(gateIndex)) return null;
+  return sameContentBackupUrls[gateIndex] ?? null;
+}

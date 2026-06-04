@@ -31,6 +31,7 @@ export default defineConfig({
       '/channels': 'http://localhost:5174',
       '/health': 'http://localhost:5174',
       '/api': 'http://localhost:5174',  // playback log etc.
+      '/mock': 'http://localhost:5174', // P0-3 review-demo injector
     },
   },
 });

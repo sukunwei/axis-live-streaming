@@ -17,8 +17,20 @@ export interface Channel {
   streamUrl: string;
   /** Master relative path, generally unused in frontend, kept for switch logic */
   masterPath: string;
-  /** Backup source URL (direct upstream HLS), used in M3.4 failover.  */
+  /**
+   * @deprecated P0-3: always empty as of M1. Will be removed in M2.
+   * Cross-channel URLs were the source of "auto switch to wrong content" —
+   * see docs/failover-recovery-技术方案与开发计划.md §1.2.
+   */
   backupStreamUrls: string[];
+  /**
+   * P0-3: proxy-rewritten same-content backup URLs (e.g.
+   * '/hls/red-bull-tv/master_6660.m3u8'). Auto-failover only consults this
+   * list. May be empty.
+   */
+  sameContentBackupUrls: string[];
+  /** P0-3: derived from sameContentBackupUrls.length > 0. */
+  autoFailoverEnabled: boolean;
   /** LIVE source flag (affects smoothness score) */
   live: boolean;
   /** Known variant count (affects smoothness score) */

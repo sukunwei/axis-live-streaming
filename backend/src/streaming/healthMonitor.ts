@@ -14,6 +14,7 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 import { getChannels, getChannel } from './registry.js';
+import { isBroken } from './mockFailure.js';
 
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -52,6 +53,15 @@ export function getAllHealth(): Record<string, { status: SourceHealth; reason: s
   return result;
 }
 
+/**
+ * P0-3: internal probe function, exported only for testing the
+ * mock-injector integration. Real probes run on the startHealthMonitor
+ * interval; tests call this directly to avoid the 5s wait.
+ */
+export function _probeOne(channelId: string, url: string): Promise<void> {
+  return probeOne(channelId, url);
+}
+
 export function onChange(listener: Listener): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
@@ -81,6 +91,25 @@ async function probeAll(): Promise<void> {
 }
 
 function probeOne(channelId: string, url: string): Promise<void> {
+  // P0-3: when the mock injector has marked this channel broken, the
+  // proxy returns 503 to the player. The health monitor probe,
+  // however, bypasses the proxy and goes directly to the upstream
+  // origin. Without this short-circuit, the monitor would never see
+  // the mock failure and the 'down' state would never propagate via
+  // SSE — the PlaybackBlockedOverlay path would never be exercised
+  // in demo. We mark the probe as a failure (counts toward the
+  // 2-consecutive → degraded threshold) so the existing state
+  // machine continues to drive the rest of the flow.
+  if (isBroken(channelId)) {
+    // Demo fast-path: the mock injector is a demo aid, not a real
+    // upstream degradation. Skip the 2-fail → degraded → 5s-sustained
+    // ladder and transition directly to 'down' on the first probe so
+    // the PlaybackBlockedOverlay shows within one probe cycle (~5s)
+    // instead of ~15s. Real upstream failures still go through the
+    // normal markFail ladder below.
+    transition(channelId, 'down', 'mock: source broken');
+    return Promise.resolve();
+  }
   return new Promise(resolve => {
     let settled = false;
     const finish = (): void => {
