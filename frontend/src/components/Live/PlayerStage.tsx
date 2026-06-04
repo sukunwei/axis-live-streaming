@@ -1,5 +1,5 @@
 /**
- * PlayerStage — main player (M3.4 + M3.6 SSE-driven failover)
+ * PlayerStage — main player (M3.4 + M3.6 + P0-3 same-content failover)
  *
  * Responsibilities:
  *   - Mount <video> element
@@ -18,9 +18,10 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import Hls from 'hls.js';
 import { makeHlsConfig } from '../../live/hlsConfig';
-import { RecoveryGate, type RecoveryAction } from '../../live/recoveryGate';
+import { RecoveryGate, type RecoveryAction, resolveFailoverTarget } from '../../live/recoveryGate';
 import { MetricsCollector } from '../../live/MetricsCollector';
 import { useStreamingStore } from '../../stores/streamingStore';
+import { PlaybackBlockedOverlay } from './PlaybackBlockedOverlay';
 import { Volume2, VolumeX, Maximize2, Minimize2, Play, Pause } from 'lucide-react';
 
 function isBufferFullDetail(details: string | undefined): boolean {
@@ -155,8 +156,17 @@ interface PlayerStageProps {
   streamUrl: string;
   streamName: string;
   channelId?: string;
-  /** Backup sources (upstream direct URL) */
-  backupStreamUrls?: readonly string[];
+  /**
+   * P0-3: same-content backup URLs (proxy paths). Auto-failover only
+   * consults this list. Cross-channel URLs are NOT permitted here.
+   */
+  sameContentBackupUrls?: readonly string[];
+  /**
+   * P0-3: derived from sameContentBackupUrls.length > 0 by the backend.
+   * When false, down state shows PlaybackBlockedOverlay instead of
+   * silently misdirecting the viewer to a different channel.
+   */
+  autoFailoverEnabled?: boolean;
   /**
    * Optional externally-owned MetricsCollector ref. When provided, PlayerStage
    * populates this ref instead of creating its own — lets a parent (App) share
@@ -171,7 +181,8 @@ export function PlayerStage({
   streamUrl,
   streamName,
   channelId,
-  backupStreamUrls = [],
+  sameContentBackupUrls = [],
+  autoFailoverEnabled = false,
   collectorRef: externalCollectorRef,
   onError,
 }: PlayerStageProps) {
@@ -180,6 +191,14 @@ export function PlayerStage({
   const gateRef = useRef(new RecoveryGate());
   const internalCollectorRef = useRef<MetricsCollector | null>(null);
   const collectorRef = externalCollectorRef ?? internalCollectorRef;
+  /**
+   * P0-3: tracks whether the current mount is parked on a backup source
+   * (or blocked because no backup exists) and therefore needs to reload
+   * the primary when health returns to ok.
+   */
+  const needsReloadOnRecoveryRef = useRef(false);
+  /** P0-3: 5s eval timer — see retryCurrentSource. */
+  const retryEvalTimerRef = useRef<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentQuality, setCurrentQuality] = useState<string>('auto');
@@ -187,6 +206,8 @@ export function PlayerStage({
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  /** P0-3: when true, PlaybackBlockedOverlay covers the video. */
+  const [isBlocked, setIsBlocked] = useState(false);
   const playerContainerRef = useRef<HTMLDivElement>(null);
 
   const toggleFullscreen = (): void => {
@@ -199,21 +220,73 @@ export function PlayerStage({
     }
   };
 
-  // Improvement 3: subscribe to health monitor, auto-switch to backup after 2s of down
+  /**
+   * P0-3: manual retry from the PlaybackBlockedOverlay. Always
+   * attempts a rebuild + reload, then waits 5s before deciding the
+   * outcome:
+   *
+   *   - Source recovered within 5s → video is playing, do nothing
+   *     (overlay stays hidden, MANIFEST_PARSED cleared the flag)
+   *   - Source still down at 5s   → re-surface the overlay
+   *
+   * The 5s window gives a transiently-flaky upstream a chance to
+   * recover without the user staring at a permanent overlay after
+   * a single false-positive Retry. If the user wants to bail early,
+   * clicking Restore clears the mock and the health-ok →
+   * reloadPrimary effect takes over.
+   */
+  const retryCurrentSource = (): void => {
+    if (!videoRef.current) return;
+    needsReloadOnRecoveryRef.current = false;
+    setIsBlocked(false);
+    gateRef.current.reset();
+    if (retryEvalTimerRef.current) {
+      clearTimeout(retryEvalTimerRef.current);
+      retryEvalTimerRef.current = null;
+    }
+    hlsRef.current?.destroy();
+    const next = new Hls(makeHlsConfig());
+    hlsRef.current = next;
+    next.attachMedia(videoRef.current);
+    next.loadSource(streamUrl);
+    retryEvalTimerRef.current = window.setTimeout(() => {
+      retryEvalTimerRef.current = null;
+      const v = videoRef.current;
+      if (!v) return;
+      // playing = not paused AND has current data
+      const playing = !v.paused && v.readyState >= 2;
+      if (!playing) {
+        setIsBlocked(true);
+        needsReloadOnRecoveryRef.current = true;
+      }
+    }, 5_000);
+  };
+
+  // P0-3: subscribe to health monitor, auto-failover to a same-content
+  // backup when one is available. Without a same-content backup, surface
+  // a blocked overlay rather than silently switching to a different channel.
   const health = useStreamingStore(s =>
     channelId ? s.healthByChannel[channelId] ?? 'ok' : 'ok',
   );
   useEffect(() => {
     if (health !== 'down' || !channelId) return;
+    const target = resolveFailoverTarget(sameContentBackupUrls, 0);
+    if (!autoFailoverEnabled || !target) {
+      // No same-content backup → block instead of misdirecting.
+      // Stop hls to avoid flooding upstream with retries, mark for reload
+      // on recovery, and surface the overlay.
+      needsReloadOnRecoveryRef.current = true;
+      setIsBlocked(true);
+      hlsRef.current?.stopLoad();
+      return;
+    }
     const t = setTimeout(() => {
-      // Pick the next untried backup (avoid loops: if currently on backup[0], jump to backup[1])
-      const currentIsBackup = (backupStreamUrls ?? []).some(b => hlsRef.current?.url === b);
-      const nextIdx = currentIsBackup ? 1 : 0;
-      const target = (backupStreamUrls ?? [])[nextIdx];
-      if (!target || !hlsRef.current) return;
-      setFailoverNotice(`SSE-driven failover → backup #${nextIdx + 1}`);
+      if (!hlsRef.current) return;
+      needsReloadOnRecoveryRef.current = true;
+      setIsBlocked(false);
+      setFailoverNotice('Switched to same-content bitrate fallback');
       // eslint-disable-next-line no-console
-      console.warn(`[player] sse-driven failover → backup[${nextIdx}] (channel ${channelId})`);
+      console.warn(`[player] sse-driven failover → sameContentBackup[0] (channel ${channelId})`);
       hlsRef.current.destroy();
       const next = new Hls(makeHlsConfig());
       hlsRef.current = next;
@@ -221,7 +294,27 @@ export function PlayerStage({
       if (videoRef.current) next.attachMedia(videoRef.current);
     }, 2_000);
     return () => clearTimeout(t);
-  }, [health, channelId, backupStreamUrls]);
+  }, [health, channelId, sameContentBackupUrls, autoFailoverEnabled]);
+
+  // P0-3: when health returns to ok after a failover / block, reload the
+  // primary source. The video element is reused (no remount) to keep the
+  // last visible frame around and avoid a hard black-out.
+  useEffect(() => {
+    if (health !== 'ok') return;
+    if (!needsReloadOnRecoveryRef.current) return;
+    if (!videoRef.current) return;
+    needsReloadOnRecoveryRef.current = false;
+    setIsBlocked(false);
+    setFailoverNotice(null);
+    setErrorMsg(null);
+    gateRef.current.reset();
+    hlsRef.current?.stopLoad();
+    hlsRef.current?.destroy();
+    const next = new Hls(makeHlsConfig());
+    hlsRef.current = next;
+    next.attachMedia(videoRef.current);
+    next.loadSource(streamUrl);
+  }, [health, streamUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -294,6 +387,11 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.log(`[hls] manifest parsed, ${data.levels.length} levels`);
       setIsLoading(false);
+      // P0-3: a successful manifest parse means the source is alive
+      // (or at least reachable). Clear the blocked overlay if it was
+      // up — e.g. a Retry click that started the rebuild before the
+      // overlay re-eval timer fired.
+      setIsBlocked(false);
       // Hard cap ABR at 720p: 1080p variants observed to stall on common
       // connections, and the visual delta over 720p on a typical screen
       // is small. Find the highest level index with height ≤ 720 and
@@ -370,20 +468,30 @@ export function PlayerStage({
         }
         case 'failover': {
           const idx = gateRef.current.nextBackupIndex();
-          const backup = backupStreamUrls[idx];
+          const backup = resolveFailoverTarget(sameContentBackupUrls, idx);
           if (backup) {
             setErrorMsg(null);
-            setFailoverNotice(`Switched to backup #${idx + 1}`);
+            setFailoverNotice(`Switched to same-content bitrate fallback #${idx + 1}`);
+            needsReloadOnRecoveryRef.current = true;
             hls.destroy();
             const next = new Hls(makeHlsConfig());
             hlsRef.current = next;
             next.loadSource(backup);
             next.attachMedia(video);
             // eslint-disable-next-line no-console
-            console.warn(`[hls] failover → backup[${idx}]: ${backup}`);
+            console.warn(`[hls] failover → sameContentBackup[${idx}]: ${backup}`);
           } else {
-            setErrorMsg('All backup sources unavailable');
-            onError?.(kind, data.details ?? 'all backups exhausted');
+            setErrorMsg('All same-content backups unavailable');
+            onError?.(kind, data.details ?? 'all same-content backups exhausted');
+            // P0-3: the player is in a terminal state — source is down
+            // and no backup is eligible. Re-surface the blocked overlay
+            // even if a prior Retry click had dismissed it; otherwise
+            // the user stares at a permanent loading spinner while the
+            // upstream is dead. The next fatal error from a fresh
+            // hls instance lands here, so the overlay comes back within
+            // 1–2s of a failed Retry rather than waiting for SSE.
+            setIsBlocked(true);
+            needsReloadOnRecoveryRef.current = true;
           }
           break;
         }
@@ -447,6 +555,11 @@ export function PlayerStage({
     document.addEventListener('fullscreenchange', onFsChange);
 
     return () => {
+      // P0-3: cancel any in-flight Retry eval timer
+      if (retryEvalTimerRef.current) {
+        clearTimeout(retryEvalTimerRef.current);
+        retryEvalTimerRef.current = null;
+      }
       // Final unmount sample
       if (channelId) {
         const m = collector.current;
@@ -474,7 +587,7 @@ export function PlayerStage({
         hlsRef.current = null;
       }
     };
-  }, [streamUrl, backupStreamUrls, onError]);
+  }, [streamUrl, sameContentBackupUrls, onError]);
 
   return (
     <div ref={playerContainerRef} className="relative w-full h-full bg-black rounded-lg overflow-hidden">
@@ -495,6 +608,13 @@ export function PlayerStage({
             <p className="text-white text-sm">Loading {streamName}…</p>
           </div>
         </div>
+      )}
+
+      {isBlocked && (
+        <PlaybackBlockedOverlay
+          streamName={streamName}
+          onRetry={retryCurrentSource}
+        />
       )}
 
       {errorMsg && (

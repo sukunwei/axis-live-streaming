@@ -30,6 +30,15 @@ function validate(ch: Channel): void {
   if (typeof ch.variants !== 'number' || ch.variants < 1) {
     throw new Error(`[registry] channel ${ch.id} variants must be a positive number`);
   }
+  // sameContentBackups: each entry must be an http(s) absolute URL (P0-3).
+  if (!Array.isArray(ch.sameContentBackups)) {
+    throw new Error(`[registry] channel ${ch.id} sameContentBackups must be an array (can be empty)`);
+  }
+  for (const b of ch.sameContentBackups) {
+    if (!b || !b.url || !b.url.startsWith('http')) {
+      throw new Error(`[registry] channel ${ch.id} sameContentBackup.url must be http(s): ${JSON.stringify(b)}`);
+    }
+  }
   // backupUrls is now optional; see file header for why.
   if (!Array.isArray(ch.backupUrls)) {
     throw new Error(`[registry] channel ${ch.id} backupUrls must be an array (can be empty)`);
