@@ -72,11 +72,17 @@ export function VideoJsPlayer({ streamUrl, streamName, poster }: VideoJsPlayerPr
     if (poster) {
       player.poster(poster);
     }
-    // a11y: announce the channel name on the player.
-    const techEl = player.tech(true).el() as HTMLVideoElement | undefined;
-    if (techEl) {
-      techEl.setAttribute('aria-label', `${streamName} live stream`);
-    }
+    // a11y: announce the channel name on the underlying tech element.
+    // video.js initializes async; player.tech() is undefined until the
+    // 'ready' event fires, so we wait rather than reading it immediately
+    // (which would throw "Cannot read properties of undefined (reading
+    // 'el')").
+    player.on('ready', () => {
+      const techEl = player.tech().el() as HTMLVideoElement | undefined;
+      if (techEl) {
+        techEl.setAttribute('aria-label', `${streamName} live stream`);
+      }
+    });
 
     return () => {
       player.dispose();
