@@ -65,7 +65,12 @@ const BASE_CONFIG: Partial<HlsConfig> = {
   enableWorker: true,
 
   // -- ABR (Tune 3: more conservative) --
-  capLevelToPlayerSize: true,
+  // capLevelToPlayerSize: disabled — CapLevelController's event-driven
+  // autoLevelCapping would otherwise overwrite our hard 720p cap from
+  // MANIFEST_PARSED whenever the player element is wider than 1280px
+  // (fullscreen, very wide viewports). See PlayerStage MANIFEST_PARSED
+  // handler for the explicit `hls.autoLevelCapping = <720p-index>` set.
+  capLevelToPlayerSize: false,
   abrEwmaFastLive: 8.0,            // Tune 3: 6 -> 8
   abrEwmaSlowLive: 20.0,           // Tune 3: 15 -> 20
   abrBandWidthFactor: 0.95,

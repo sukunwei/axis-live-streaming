@@ -555,6 +555,7 @@ flowchart TB
 2. **真正的扇出与 CDN**：段缓存外置（Redis）+ CloudFront/Cloudflare 前置，配 L7 粘性会话，验证多并发观众下回源不放大。
 3. **自动化质量回归**：用 Playwright 跑「启动时间 / 卡顿率 / 切换耗时 / 坏源恢复时间」基准，让「流质量」可被指标化回归，而非仅靠演示。
 4. **CDN-friendly HLS 旁路**：当确认上游为标准 HLS（非 LL-HLS）时，分片走 CDN 缓存路径，proxy 只代理 manifest——进一步降低回源压力。
+5. **支持更多直播流格式** — 扩展当前 HLS-only 限制：① 频道缩略图（后端 ffmpeg 抓帧 + `/thumb/:channel.jpg`，前端 `<img>` 引用）让 `ChannelGrid` 有「实况」观感；② `PlayerStage` 加 `type === 'mp4'` 分支，浏览器原生 `<video src>`，解锁 VOD / 集锦 / 回放场景。
 
 ---
 

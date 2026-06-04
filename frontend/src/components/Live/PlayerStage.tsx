@@ -187,14 +187,7 @@ export function PlayerStage({
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
   const playerContainerRef = useRef<HTMLDivElement>(null);
-
-  // A VOD stream has a finite, >0 duration. A live stream reports Infinity
-  // (hls.js) or 0 (until metadata loads). The slider is only seekable in
-  // the VOD case; for live we render a static bar.
-  const isSeekable = Number.isFinite(duration) && duration > 0;
 
   const toggleFullscreen = (): void => {
     const el = playerContainerRef.current;
@@ -301,6 +294,23 @@ export function PlayerStage({
       // eslint-disable-next-line no-console
       console.log(`[hls] manifest parsed, ${data.levels.length} levels`);
       setIsLoading(false);
+      // Hard cap ABR at 720p: 1080p variants observed to stall on common
+      // connections, and the visual delta over 720p on a typical screen
+      // is small. Find the highest level index with height ≤ 720 and
+      // set autoLevelCapping — hls.js's 1.6+ API for hard max level
+      // (maxLevelHeight was removed in 1.6).
+      const MAX_HEIGHT = 720;
+      let capIndex = -1;
+      for (let i = 0; i < hls.levels.length; i++) {
+        if (hls.levels[i].height !== undefined && hls.levels[i].height! <= MAX_HEIGHT) {
+          capIndex = i;
+        }
+      }
+      if (capIndex >= 0) {
+        hls.autoLevelCapping = capIndex;
+        // eslint-disable-next-line no-console
+        console.log(`[hls] autoLevelCapping=${capIndex} (height=${hls.levels[capIndex].height}p)`);
+      }
       playWithAudio(video, setIsMuted);
     });
 
@@ -476,10 +486,6 @@ export function PlayerStage({
         onPlay={() => { setIsPlaying(true); }}
         onPause={() => setIsPlaying(false)}
         onClick={() => (videoRef.current?.paused ? videoRef.current?.play() : videoRef.current?.pause())}
-        onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
-        onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
-        onDurationChange={() => setDuration(videoRef.current?.duration ?? 0)}
-        onSeeked={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
       />
 
       {isLoading && (
@@ -508,20 +514,11 @@ export function PlayerStage({
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent">
-        <TimeSlider
-          currentTime={currentTime}
-          duration={duration}
-          seekable={isSeekable}
-          onSeek={(t) => {
-            const v = videoRef.current;
-            if (v) v.currentTime = t;
-          }}
-        />
         <div className="flex items-center gap-3 px-3 pb-3 text-white text-sm pointer-events-none">
           <span className="bg-red-600 px-2 py-0.5 rounded text-xs font-semibold">
-            {isPlaying ? '● LIVE' : '⏸ PAUSED'}
+            LIVE
           </span>
-          {currentQuality !== 'auto' && (
+          {currentQuality !== 'auto' && parseInt(currentQuality, 10) > 0 && (
             <span className="bg-black/60 px-2 py-0.5 rounded text-xs">{currentQuality}</span>
           )}
           <div className="flex-1" />
@@ -571,88 +568,3 @@ export function PlayerStage({
   );
 }
 
-/**
- * TimeSlider — seek bar at the bottom of the player.
- *
- * Two states:
- *   - `seekable` (VOD, finite duration): full slider, click/drag seeks via
- *     `onSeek(newTime)`. Uses native <input type=range> for accessibility.
- *   - not seekable (live stream, duration = Infinity): a static thin bar
- *     rendered with the current buffered fraction if available. The
- *     `currentTime` keeps incrementing because the player sits 10s behind
- *     the live edge (hlsConfig.liveSyncDuration), so a live DVR within
- *     the 80s backBuffer is technically possible — but exposing that as
- *     a seek slider is fragile (different sources keep different window
- *     sizes). For now, live just shows a static progress indicator.
- *
- * Why custom instead of native <video controls>: the bottom control bar
- * already has custom buttons, and matching the visual language matters
- * more than the small accessibility win from <video controls>.
- */
-function TimeSlider({
-  currentTime,
-  duration,
-  seekable,
-  onSeek,
-}: {
-  currentTime: number;
-  duration: number;
-  seekable: boolean;
-  onSeek: (t: number) => void;
-}) {
-  const fmt = (s: number): string => {
-    if (!Number.isFinite(s) || s < 0) return '--:--';
-    const total = Math.floor(s);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const sec = total % 60;
-    const pad = (n: number): string => String(n).padStart(2, '0');
-    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
-  };
-
-  // While the user is dragging, freeze the displayed value at what they
-  // picked — otherwise onTimeUpdate keeps pushing currentTime forward and
-  // the thumb visibly snaps back to the right while you drag left.
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragValue, setDragValue] = useState(0);
-  const displayTime = isDragging ? dragValue : currentTime;
-
-  if (!seekable) {
-    return (
-      <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums select-none">
-        <span className="w-10 text-right">{fmt(currentTime)}</span>
-        <div className="flex-1 h-1 bg-red-500/30 rounded overflow-hidden">
-          <div className="h-full bg-red-500 w-full animate-pulse" />
-        </div>
-        <span className="w-10">LIVE</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2 px-3 pt-2 text-[10px] text-zinc-300 font-mono tabular-nums">
-      <span className="w-10 text-right">{fmt(displayTime)}</span>
-      <input
-        type="range"
-        min={0}
-        max={duration}
-        step={0.1}
-        value={displayTime}
-        onChange={(e) => {
-          const t = Number(e.target.value);
-          setDragValue(t);
-          onSeek(t);
-        }}
-        onPointerDown={() => {
-          setIsDragging(true);
-          setDragValue(currentTime);
-        }}
-        onPointerUp={() => setIsDragging(false)}
-        onPointerCancel={() => setIsDragging(false)}
-        className="flex-1 h-1 accent-blue-500 cursor-pointer"
-        aria-label="Seek"
-      />
-      <span className="w-10">{fmt(duration)}</span>
-    </div>
-  );
-}

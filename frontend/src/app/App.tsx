@@ -106,7 +106,7 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="lg:col-span-1 space-y-4">
+          <div className="space-y-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
               <ChannelGrid />
             </div>

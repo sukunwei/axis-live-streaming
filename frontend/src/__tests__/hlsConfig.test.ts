@@ -28,8 +28,11 @@ describe('hlsConfig (smoothness-first edition)', () => {
     expect(hlsConfig.backBufferLength).toBe(80);
   });
 
-  it('caps resolution by player size', () => {
-    expect(hlsConfig.capLevelToPlayerSize).toBe(true);
+  it('disables capLevelToPlayerSize (PlayerStage sets hard 720p cap instead)', () => {
+    // See PlayerStage MANIFEST_PARSED handler: capLevelToPlayerSize's
+    // event-driven autoLevelCapping would otherwise override our hard
+    // 720p cap whenever the player element exceeds 720p tall.
+    expect(hlsConfig.capLevelToPlayerSize).toBe(false);
   });
 
   it('worker enabled', () => {
